@@ -34,8 +34,13 @@ python3 scripts/generate_visitation_tree.py \
     --root-id "@I123@" \
     --all-descendants \
     --descendants-only \
+    --title "Descendants of William Short" \
+    --font-family "Times New Roman" \
     --output descendants.drawio
 ```
+
+- `--title` overrides the default title.
+- `--font-family` sets the font for labels and title (default `Helvetica`).
 
 ### Render to PNG/SVG
 

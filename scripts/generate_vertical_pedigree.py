@@ -19,6 +19,7 @@ MARRIAGE_Y_OFFSET = 12.0
 MARRIAGE_LINE_GAP = 4.0
 STROKE_COLOR = "#333333"
 MARGIN = 20.0
+FONT_FAMILY = "Helvetica"  # default font; override with --font-family
 
 
 def parse_gedcom(path: str):
@@ -154,7 +155,7 @@ def text_cell(cell_id: str, x: float, y: float, name: str, birth: str) -> str:
         f'        <mxCell id="{cell_id}" value="{name}&#xa;(b. {birth})" '
         f'style="text;html=1;strokeColor=none;fillColor=#ffffff;align=center;'
         f'verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;'
-        f'fontColor={STROKE_COLOR};" vertex="1" parent="1">\n'
+        f'fontFamily={FONT_FAMILY};fontColor={STROKE_COLOR};" vertex="1" parent="1">\n'
         f'          <mxGeometry x="{x}" y="{y}" width="{TEXT_W}" height="{TEXT_H}" as="geometry" />\n'
         f'        </mxCell>'
     )
@@ -222,7 +223,7 @@ def generate_drawio(path_ids: list[str], individuals: dict, families: dict, titl
         f'\n        <!-- Title -->\n'
         f'        <mxCell id="title" value="{title}" style="text;html=1;strokeColor=none;'
         f'fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;'
-        f'fontSize=14;fontStyle=1" vertex="1" parent="1">\n'
+        f'fontSize=14;fontFamily={FONT_FAMILY};fontStyle=1" vertex="1" parent="1">\n'
         f'          <mxGeometry x="{MARGIN}" y="{MARGIN / 2}" width="{couple_width}" '
         f'height="20" as="geometry" />\n'
         f'        </mxCell>'
@@ -319,7 +320,11 @@ def main() -> int:
     parser.add_argument("--to", dest="target", required=True, help='Target ancestor name or ID, e.g. "Edward III Plantagenet" or "@I456@".')
     parser.add_argument("--output", required=True, help="Output draw.io XML path.")
     parser.add_argument("--title", default=None, help="Diagram title.")
+    parser.add_argument("--font-family", default="Helvetica", help="Font family for labels and title (default Helvetica).")
     args = parser.parse_args()
+
+    global FONT_FAMILY
+    FONT_FAMILY = args.font_family
 
     individuals, families = parse_gedcom(args.gedcom)
 

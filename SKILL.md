@@ -1,7 +1,7 @@
 ---
 name: drawio-family-trees
 description: Create clean, minimal family tree / pedigree diagrams in draw.io from GEDCOM or hand-rolled data. Optimised for clarity and avoiding the common visual artefacts that make hand-built trees look wrong.
-version: 1.21.0
+version: 1.22.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -84,7 +84,6 @@ If the user wants a tree from a GEDCOM file:
    ```
    All checks passed. The chart is safe to deliver.
    ```
-   See `references/pre-delivery-checklist.md` for the full checklist.
 5. If the checker reports issues, dig deeper:
    - Run `validate.py` directly for the raw linter output.
    - Verify generational separation: a correct chart has one distinct y-value per generation, not all names clustered on one or two horizontal lines.
@@ -92,6 +91,24 @@ If the user wants a tree from a GEDCOM file:
    See `references/visual-verification.md` and `references/descendant-layout-y-position-bug.md` for the recipes.
 6. Visually inspect the rendered PNG/SVG. Automated checks do not catch crowding, lopsided spacing, or lines that look wrong to a human eye.
 7. Show the PNG/SVG and the editable `.drawio` source.
+
+### Titles and fonts
+
+All three generators accept `--title` and `--font-family`:
+
+```bash
+python3 scripts/generate_visitation_tree.py \
+    --gedcom family.ged \
+    --root-id "@I123@" \
+    --all-descendants \
+    --descendants-only \
+    --title "Descendants of William Short" \
+    --font-family "Times New Roman" \
+    --output family_tree.drawio
+```
+
+- `--title` overrides the default title derived from the root person's name.
+- `--font-family` sets the draw.io `fontFamily` for every person label and the title. The default is `Helvetica`. Use a font name draw.io recognises (e.g. `Arial`, `Times New Roman`, `Georgia`, `Courier New`).
 
 The generator produces a **no-box, visitation-style** tree with orthogonal connectors and double-line marriage connectors.
 
@@ -367,10 +384,8 @@ The output page is auto-fitted to the content bounding box with a small margin, 
 - `references/gedcom-to-visitation-tree.md` — full GEDCOM-to-tree workflow and layout algorithm.
 - `references/ancestor-chart-edge-case.md` — why ancestor-only charts need a dedicated bottom-up generator and how it differs from descendant charts.
 - `references/mixed-chart-connector-fix.md` — mixed (hourglass) charts: per-child-person ancestor connectors, sibling rendering, and the `child_centers` shift.
-- `references/mixed-chart-layout.md` — centring the ancestor block over the root generation in mixed charts so the parent couple sits between the focus person and their siblings.
 - `references/descendant-layout-y-position-bug.md` — debugging a descendant-only chart that collapses onto a single horizontal line, the root-has-siblings pitfall, and verification recipes.
 - `references/skill-extraction.md` — how to extract this skill from its original nested location under `drawio-skill` into a standalone GitHub repository.
-- `references/visual-verification.md` — how to inspect a rendered chart when vision tools fail, including pixel-level recipes and what "looks wrong" means beyond the linter.
 - `scripts/verify_family_tree.py` — automated pre-delivery check: runs the linter, verifies generational separation, and detects overlapping horizontal child connectors.
 - `references/visitation-style-family-tree.md` — clean three-generation tree using `shape=line` connectors.
 - `references/minimal-family-tree.md` — minimal worked example.

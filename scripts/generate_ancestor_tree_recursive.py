@@ -28,6 +28,7 @@ MARGIN = 20.0
 PAGE_CENTER_X = 850.0
 MARRIAGE_Y_OFFSET = TEXT_H - 10.0  # near bottom of text box
 MARRIAGE_LINE_GAP = 4.0
+FONT_FAMILY = "Helvetica"  # default font; override with --font-family
 
 
 def parse_gedcom(path: str) -> tuple[dict, dict]:
@@ -269,7 +270,7 @@ def text_cell(cell_id: str, x: float, y: float, label: str) -> str:
     safe_label = html.escape(label).replace("\n", "&#xa;")
     return (
         f'    <mxCell id="{cell_id}" value="{safe_label}" '
-        f'style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;" '
+        f'style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontFamily={FONT_FAMILY};" '
         f'vertex="1" parent="1">\n'
         f'      <mxGeometry x="{x:.1f}" y="{y:.1f}" width="{TEXT_W:.1f}" height="{TEXT_H:.1f}" as="geometry" />\n'
         f'    </mxCell>'
@@ -329,7 +330,7 @@ def generate_drawio(root: Couple, title: str) -> str:
     # Title
     parts.append(
         f'    <mxCell id="title" value="{html.escape(title)}" '
-        f'style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" '
+        f'style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontFamily={FONT_FAMILY};fontStyle=1" '
         f'vertex="1" parent="1">\n'
         f'      <mxGeometry x="{MARGIN:.1f}" y="5" width="{page_width - 2 * MARGIN:.1f}" height="20" as="geometry" />\n'
         f'    </mxCell>'
@@ -405,7 +406,11 @@ def main() -> None:
     parser.add_argument("--generations", type=int, default=5, help="Number of ancestor generations")
     parser.add_argument("--output", required=True, help="Output drawio file")
     parser.add_argument("--title", help="Chart title")
+    parser.add_argument("--font-family", default="Helvetica", help="Font family for labels and title (default Helvetica).")
     args = parser.parse_args()
+
+    global FONT_FAMILY
+    FONT_FAMILY = args.font_family
 
     global individuals, families
     individuals, families = parse_gedcom(args.gedcom)

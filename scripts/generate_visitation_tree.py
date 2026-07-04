@@ -208,6 +208,7 @@ MARRIAGE_Y_OFFSET = 18.0
 MARRIAGE_LINE_GAP = 3.0
 CHILD_CONNECTOR_STAGGER = 4.0  # vertical offset between child connectors of different spouses
 STROKE_COLOR = "#333333"
+FONT_FAMILY = "Helvetica"  # default font; override with --font-family
 
 
 def make_unit(root_id: str | None, spouse_ids: list[str], individuals: dict, generation: int) -> FamilyUnit:
@@ -944,7 +945,7 @@ def text_cell(cell_id: str, x: float, y: float, w: float, h: float, name: str, b
         <mxCell id="{cell_id}_bg" value="" style="shape=rect;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=none;" vertex="1" parent="1">
           <mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" as="geometry" />
         </mxCell>
-        <mxCell id="{cell_id}" value="{name}&#xa;(b. {birth})" style="text;html=1;strokeColor=none;fillColor=#ffffff;align=center;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;fontColor={STROKE_COLOR};" vertex="1" parent="1">
+        <mxCell id="{cell_id}" value="{name}&#xa;(b. {birth})" style="text;html=1;strokeColor=none;fillColor=#ffffff;align=center;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;fontFamily={FONT_FAMILY};fontColor={STROKE_COLOR};" vertex="1" parent="1">
           <mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" as="geometry" />
         </mxCell>'''
 
@@ -1140,7 +1141,7 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
 
     parts.append(f'''
         <!-- Title -->
-        <mxCell id="title" value="{title}" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="title" value="{title}" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontFamily={FONT_FAMILY};fontStyle=1" vertex="1" parent="1">
           <mxGeometry x="{margin}" y="{margin / 2}" width="{content_width}" height="{title_height}" as="geometry" />
         </mxCell>''')
 
@@ -1324,9 +1325,13 @@ def main() -> int:
     parser.add_argument("--ancestors-only", action="store_true", help="Skip descendants; show only root and ancestors.")
     parser.add_argument("--output", default="family_tree.drawio", help="Output draw.io file path.")
     parser.add_argument("--title", default=None, help="Diagram title (default derived from root name).")
+    parser.add_argument("--font-family", default="Helvetica", help="Font family for labels and title (default Helvetica).")
     parser.add_argument("--center-x", type=float, default=600.0, help="Horizontal centre of the diagram (default 600).")
     parser.add_argument("--root-y", type=float, default=300.0, help="Y position of the root generation (default 300).")
     args = parser.parse_args()
+
+    global FONT_FAMILY
+    FONT_FAMILY = args.font_family
 
     if not args.root and not args.root_id:
         print("ERROR: provide --root or --root-id", file=sys.stderr)

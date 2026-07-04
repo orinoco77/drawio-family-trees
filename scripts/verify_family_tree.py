@@ -70,9 +70,10 @@ def count_generations(drawio_path: str) -> int:
     tree = ET.parse(drawio_path)
     ys = set()
     for cell in tree.iter("mxCell"):
+        cell_id = cell.get("id", "")
         value = cell.get("value", "")
         geom = cell.find("mxGeometry")
-        if geom is None or not value or "Family Tree" in value:
+        if geom is None or not value or cell_id == "title":
             continue
         ys.add(float(geom.get("y", 0)))
     return len(ys)
