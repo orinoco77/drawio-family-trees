@@ -73,7 +73,9 @@ def parse_gedcom(path: str):
                 current_event = rest
                 if current_indi:
                     if rest == "NAME":
-                        individuals[current_indi]["name"] = value
+                        # Keep the first NAME record; later ones are alternate names.
+                        if not individuals[current_indi]["name"]:
+                            individuals[current_indi]["name"] = value
                     elif rest == "SEX":
                         individuals[current_indi]["sex"] = value
                     elif rest == "FAMC":
@@ -111,6 +113,13 @@ def get_name(indi_id: str, individuals: dict) -> str:
 
 def get_birth(indi_id: str, individuals: dict) -> str:
     return individuals.get(indi_id, {}).get("birth", "")
+
+def estimate_label_height(name: str, birth: str, width: float = 75.0) -> float:
+    """Estimate the height of a label in px based on text wrapping."""
+    chars_per_line = 14 
+    name_lines = (len(name) + chars_per_line - 1) // chars_per_line
+    total_lines = max(1, name_lines) + 1
+    return total_lines * 15.0
 
 
 def get_parents(indi_id: str, individuals: dict, families: dict):
@@ -199,16 +208,25 @@ class FamilyUnit:
 
 
 TEXT_W = 75.0
-TEXT_H = 30.0
-TEXT_H_SMALL = 28.0
+DEFAULT_TEXT_H = 30.0
+DEFAULT_TEXT_H_SMALL = 28.0
+DEFAULT_GENERATION_HEIGHT = 105.0
 MARRIAGE_GAP = 14.0
 MIN_SIBLING_GAP = 12.0
-GENERATION_HEIGHT = 105.0
 MARRIAGE_Y_OFFSET = 18.0
 MARRIAGE_LINE_GAP = 3.0
 CHILD_CONNECTOR_STAGGER = 4.0  # vertical offset between child connectors of different spouses
 STROKE_COLOR = "#333333"
 FONT_FAMILY = "Helvetica"  # default font; override with --font-family
+
+# Unicode superscript digits for duplicate-person markers
+SUPERSCRIPT_DIGITS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+
+# Dynamic heights calculated during runtime
+MAX_LABEL_H = DEFAULT_TEXT_H
+MAX_LABEL_H_SMALL = DEFAULT_TEXT_H_SMALL
+CURRENT_GEN_H = DEFAULT_GENERATION_HEIGHT
+DESCENDER_LENGTH = DEFAULT_TEXT_H + 20.0
 
 
 def make_unit(root_id: str | None, spouse_ids: list[str], individuals: dict, generation: int) -> FamilyUnit:
@@ -551,7 +569,7 @@ def layout_subtree(unit: FamilyUnit) -> Extent:
         if not children:
             continue
         for c in children:
-            c.y = unit.y + GENERATION_HEIGHT
+            c.y = unit.y + CURRENT_GEN_H
         child_extents = [layout_subtree(c) for c in children]
         _combine_extents(child_extents, MIN_SIBLING_GAP)
         group_left = min(e.left for e in child_extents)
@@ -654,6 +672,18 @@ def build_tree(
       parent-child alignment.
     """
     root_spouses = get_spouses(root_id, individuals, families)
+    # --- Dynamic Height Calculation ---
+    # Find the tallest label in the entire dataset to ensure consistent spacing.
+    all_heights = [estimate_label_height(get_name(iid, individuals), get_birth(iid, individuals)) for iid in individuals]
+    global_max = max(all_heights) if all_heights else DEFAULT_TEXT_H
+    
+    # Update globals for this run
+    global MAX_LABEL_H, CURRENT_GEN_H, MAX_LABEL_H_SMALL
+    MAX_LABEL_H = global_max
+    MAX_LABEL_H_SMALL = global_max - 2.0 # Keep the small offset
+    # Scale generation height: 105 was for 30. Increase by the difference.
+    CURRENT_GEN_H = DEFAULT_GENERATION_HEIGHT + (MAX_LABEL_H - DEFAULT_TEXT_H)
+    # ---------------------------------
     root_unit = make_unit(root_id, root_spouses, individuals, generation=0)
     ancestor_gens = build_ancestors(root_id, generations, individuals, families) if include_ancestors else []
     descendant_gens = build_descendants(root_unit, generations, individuals, families) if include_descendants else []
@@ -713,7 +743,7 @@ def build_tree(
     y = root_y
     current_gen_units = root_generation_units
     for ancestor_gen_units in ancestor_gens:
-        y -= GENERATION_HEIGHT
+        y -= CURRENT_GEN_H
 
         # Map each parent unit -> child (person, unit) pairs in current generation
         parent_to_child_pairs: dict[int, list[tuple[Person, FamilyUnit]]] = {id(u): [] for u in ancestor_gen_units}
@@ -884,7 +914,7 @@ def build_tree(
         y = root_y
         current_gen_units = [root_unit]
         for descendant_gen_units in descendant_gens:
-            y += GENERATION_HEIGHT
+            y += CURRENT_GEN_H
 
             for parent_unit in current_gen_units:
                 layout_marriage_children(parent_unit, y)
@@ -940,12 +970,49 @@ def build_tree(
 # ---------------------------------------------------------------------------
 
 
-def text_cell(cell_id: str, x: float, y: float, w: float, h: float, name: str, birth: str) -> str:
+def _escape_xml_attr(value: str) -> str:
+    """Escape a string for use inside a double-quoted XML attribute."""
+    return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def to_superscript(n: int) -> str:
+    """Convert a non-negative integer to a Unicode superscript string."""
+    if n == 0:
+        return SUPERSCRIPT_DIGITS[0]
+    digits = []
+    while n > 0:
+        digits.append(SUPERSCRIPT_DIGITS[n % 10])
+        n //= 10
+    return "".join(reversed(digits))
+
+
+def collect_duplicate_markers(units: list[FamilyUnit]) -> dict[str, str]:
+    """Return a mapping indi_id -> superscript marker for any person appearing
+    more than once in the chart."""
+    counts: dict[str, int] = {}
+    for unit in units:
+        for person in unit.people:
+            counts[person.indi_id] = counts.get(person.indi_id, 0) + 1
+
+    markers: dict[str, str] = {}
+    marker_idx = 1
+    for indi_id, count in counts.items():
+        if count > 1:
+            markers[indi_id] = to_superscript(marker_idx)
+            marker_idx += 1
+    return markers
+
+
+def text_cell(cell_id: str, x: float, y: float, w: float, h: float, name: str, birth: str, marker: str = "") -> str:
+    safe_name = _escape_xml_attr(name)
+    safe_birth = _escape_xml_attr(birth)
+    marker_text = _escape_xml_attr(marker)
+    name_value = f"{safe_name}{marker_text}&#xa;(b. {safe_birth})" if marker_text else f"{safe_name}&#xa;(b. {safe_birth})"
     return f'''        <!-- Label {cell_id} -->
         <mxCell id="{cell_id}_bg" value="" style="shape=rect;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=none;" vertex="1" parent="1">
           <mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" as="geometry" />
         </mxCell>
-        <mxCell id="{cell_id}" value="{name}&#xa;(b. {birth})" style="text;html=1;strokeColor=none;fillColor=#ffffff;align=center;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;fontFamily={FONT_FAMILY};fontColor={STROKE_COLOR};" vertex="1" parent="1">
+        <mxCell id="{cell_id}" value="{name_value}" style="text;html=1;strokeColor=none;fillColor=#ffffff;align=center;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;fontFamily={FONT_FAMILY};fontColor={STROKE_COLOR};" vertex="1" parent="1">
           <mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" as="geometry" />
         </mxCell>'''
 
@@ -1016,7 +1083,7 @@ def _draw_ancestor_connectors(
                 mx = parent.people[0].x + TEXT_W / 2
             marriage_centers.append(mx)
 
-            top = parent.y + TEXT_H + 1.0
+            top = parent.y + MAX_LABEL_H + 1.0
             h = connector_y - top
             vkey = (round(mx, 1), round(top, 1), round(h, 1))
             if vkey not in drawn_v:
@@ -1075,7 +1142,7 @@ def _draw_mixed_ancestor_connectors(
                 else:
                     mx = parent.people[0].x + TEXT_W / 2
 
-                top = parent.y + TEXT_H + 1.0
+                top = parent.y + MAX_LABEL_H + 1.0
                 h = connector_y - top
                 vkey = (round(mx, 1), round(top, 1), round(h, 1))
                 if vkey not in drawn_v:
@@ -1101,15 +1168,18 @@ def _draw_mixed_ancestor_connectors(
     return h_idx, c_idx
 
 
-def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = False) -> str:
+def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = False, individuals: dict | None = None) -> str:
     parts: list[str] = []
+
+    # Detect any individual appearing more than once (pedigree collapse)
+    duplicate_markers = collect_duplicate_markers(units)
 
     # Compute content bounding box and shift so the diagram sits tightly on the page
     min_x = min(p.x for u in units for p in u.people)
     max_x = max(p.x + TEXT_W for u in units for p in u.people)
     min_y = min(u.y for u in units)
     max_gen = max((u.generation for u in units), default=0)
-    max_y = max(u.y + (TEXT_H_SMALL if u.generation == max_gen else TEXT_H) for u in units)
+    max_y = max(u.y + (MAX_LABEL_H_SMALL if u.generation == max_gen else MAX_LABEL_H) for u in units)
 
     content_width = max_x - min_x
     content_height = max_y - min_y
@@ -1139,9 +1209,10 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
         <mxCell id="0" />
         <mxCell id="1" parent="0" />''')
 
+    safe_title = _escape_xml_attr(title)
     parts.append(f'''
         <!-- Title -->
-        <mxCell id="title" value="{title}" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontFamily={FONT_FAMILY};fontStyle=1" vertex="1" parent="1">
+        <mxCell id="title" value="{safe_title}" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontFamily={FONT_FAMILY};fontStyle=1" vertex="1" parent="1">
           <mxGeometry x="{margin}" y="{margin / 2}" width="{content_width}" height="{title_height}" as="geometry" />
         </mxCell>''')
 
@@ -1220,7 +1291,7 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
                 if spouse_idx == 0 or spouse_idx >= len(unit.people):
                     left_person = unit.people[0]
                     right_person = unit.people[0]
-                    descender_top = unit.y + TEXT_H + 20.0
+                    descender_top = unit.y + MAX_LABEL_H
                 elif len(unit.people) == 2:
                     left_person = unit.people[0]
                     right_person = unit.people[1]
@@ -1253,7 +1324,7 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
                 gi["descender_top"] + length
                 for gi, length in zip(group_infos, desired_lengths)
             )
-            base_connector_y = max(base_connector_y, unit.y + TEXT_H + 45.0)
+            base_connector_y = max(base_connector_y, unit.y + MAX_LABEL_H + 45.0) - 40.0
             child_y = group_infos[0]["group"][0].y
             max_connector_y = base_connector_y + (len(group_infos) - 1) * CHILD_CONNECTOR_STAGGER
             if max_connector_y >= child_y - 12.0 and len(group_infos) > 1:
@@ -1292,13 +1363,39 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
     for gen in sorted(units_by_gen.keys()):
         parts.append(f"\n        <!-- Generation {gen} -->")
         for unit in units_by_gen[gen]:
-            h = TEXT_H_SMALL if gen == max_gen else TEXT_H
+            h = MAX_LABEL_H_SMALL if gen == max_gen else MAX_LABEL_H
             for person in unit.people:
                 birth = person.birth or "?"
                 count = id_counter.get(person.indi_id, 0) + 1
                 id_counter[person.indi_id] = count
                 cell_id = person.indi_id if count == 1 else f"{person.indi_id}_{count}"
-                parts.append(text_cell(cell_id, person.x, unit.y, TEXT_W, h, person.name, birth))
+                marker = duplicate_markers.get(person.indi_id, "")
+                parts.append(text_cell(cell_id, person.x, unit.y, TEXT_W, h, person.name, birth, marker))
+
+    # Legend for duplicate persons
+    if duplicate_markers:
+        # Sort by the numeric value represented by the marker for readability
+        def marker_sort_key(item: tuple[str, str]) -> int:
+            marker = item[1]
+            total = 0
+            for ch in marker:
+                idx = SUPERSCRIPT_DIGITS.find(ch)
+                if idx >= 0:
+                    total = total * 10 + idx
+            return total
+        sorted_markers = sorted(duplicate_markers.items(), key=marker_sort_key)
+        legend_text = "; ".join(f"{get_name(indi_id, individuals or {})} {marker}" for indi_id, marker in sorted_markers)
+        # Use a compact note instead of listing every name if many
+        if len(duplicate_markers) <= 5:
+            legend_value = f"Duplicate persons: {legend_text}"
+        else:
+            legend_value = f"Superscript numbers indicate the same person appearing in multiple positions ({len(set(duplicate_markers.values()))} duplicated individuals)."
+        safe_legend = _escape_xml_attr(legend_value)
+        parts.append(f'''
+        <!-- Duplicate-person legend -->
+        <mxCell id="legend" value="{safe_legend}" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;fontFamily={FONT_FAMILY};fontColor={STROKE_COLOR};" vertex="1" parent="1">
+          <mxGeometry x="{margin}" y="{page_height - margin + 5}" width="{content_width}" height="{margin - 5}" as="geometry" />
+        </mxCell>''')
 
     parts.append('''
       </root>
@@ -1387,7 +1484,7 @@ def main() -> int:
     )
 
     title = args.title or f"{get_name(root_id, individuals)} Family Tree (Visitation Style)"
-    xml = generate_drawio(units, title, ancestor_mode=args.ancestors_only)
+    xml = generate_drawio(units, title, ancestor_mode=args.ancestors_only, individuals=individuals)
 
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(xml)

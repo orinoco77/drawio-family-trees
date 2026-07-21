@@ -1,7 +1,7 @@
 ---
 name: drawio-family-trees
 description: Create clean, minimal family tree / pedigree diagrams in draw.io from GEDCOM or hand-rolled data. Optimised for clarity and avoiding the common visual artefacts that make hand-built trees look wrong.
-version: 1.22.0
+version: 1.23.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -29,19 +29,12 @@ These conventions produced the final Short-family chart and should be treated as
 6. **Recursive, overlap-free layout for large descendant trees.** For descendant-only charts the generator uses a bottom-up subtree layout: each subtree is sized to its contents, parent units are centred over their children, and sibling subtrees are separated by a minimum gap. This guarantees no text-label overlaps; the chart grows as wide as necessary.
 7. **Ancestor charts are built bottom-up.** Use the dedicated recursive ancestor generator. Start with the focus person, place their parents above them, then each parent's parents, and so on. Each couple gets a double marriage line and a single vertical descender straight down to the child below. The child is centred under the couple.
 8. **Keep the focus person centred in ancestor charts.** The root generation is anchored at the page centre and is not shifted by ancestor overlap resolution.
-9. **Deduplicate lines for pedigree collapse.** The same ancestor may appear above the same child through multiple lines of descent. Emit only one line segment for identical parent→child geometry, and give duplicate person occurrences unique cell IDs.
-10. **Compact proportions.** Default constants:
-    - `TEXT_W = 75`
-    - `TEXT_H = 30`, `TEXT_H_SMALL = 28`
-    - `MARRIAGE_GAP = 14`
-    - `MIN_SIBLING_GAP = 12`
-    - `GENERATION_HEIGHT = 105`
-    - `MARRIAGE_Y_OFFSET = 18`, `MARRIAGE_LINE_GAP = 3`
-    - Name labels are **top-aligned** (`verticalAlign=top`) so every name in a generation begins at the same y; long names then extend downward and do not ride up into connector lines above.
-    - Single-parent vertical descenders start **20 px below the bottom of the name box** (`descender_top = y + TEXT_H + 20.0`), not at the text centre, so the line is clearly below the name.
-    - Desired descender lengths are computed **per group**: **45 px for single-parent groups** and **63 px for couple groups**. The horizontal child-bar position for a unit is the highest required end of any of its groups, staggered 4 px lower for each group to the left.
-    - The vertical descender from a parent (or parent couple) ends **1 px below the horizontal child-bar** (`connector_y + 1.0`). This overlap is hidden by the sibling bar when present; for an only child with no sibling bar drawn, it closes the 1 px gap between the descender and the child-drop line that would otherwise appear just above the name.
-    - Vertical child drops start **just below the sibling bar** (`connector_y + 1.0`) and stop **3 px above the child's label** (`child.y - 4.0`). The small gap is not visible in normal rendering and prevents the line from touching the text.
+- **Deduplicate lines for pedigree collapse.** The same ancestor may appear above the same child through multiple lines of descent. Emit only one line segment for identical parent→child geometry, and give duplicate person occurrences unique cell IDs.
+- **Duplicate-person markers.** When the same individual appears in multiple places on the same chart (e.g. due to cousin intermarriage / pedigree collapse), append a Unicode superscript marker (¹, ², ³…) to every occurrence of that person's name and add a short legend. The marker itself is the indication that the labels refer to the same person; the person is still drawn in each position so the branch structure remains clear. See `references/duplicate-person-markers.md`.
+- **Adaptive Vertical Spacing:** To prevent labels with wrapped text from overlapping connectors, the generator dynamically calculates the maximum label height (`MAX_LABEL_H`) across the dataset.
+    - **Dynamic Generation Height:** `CURRENT_GEN_H` scales automatically: `DEFAULT_GENERATION_HEIGHT + (MAX_LABEL_H - DEFAULT_TEXT_H)`.
+    - **Dynamic Descenders:** The vertical distance from the parent label to the horizontal child connector is driven by `base_connector_y`. To make the chart more compact, apply a negative offset to `base_connector_y` **after** it has been computed from `descender_top + desired_length`. Do **not** apply the offset to `descender_top`: that moves the start of the line up while leaving the sibling bar in place, which actually lengthens the line and can push connectors into the labels above or off the top of the page. See `references/dynamic-descender-height.md`.
+    - **Height Estimation:** The `estimate_label_height` helper approximates text wrapping based on a ~14 character per line limit.
 11. **Auto-fitted page.** The draw.io page is sized to the content bounding box plus a small margin; no surrounding whitespace.
 12. **Intermarried ancestors.** When two people from different families marry (e.g. Alexander Short & Elsie Finigan), each set of parents is centred over its own child. The marriage gap between the intermarried couple widens as needed so the parent units do not overlap.
 13. **No boxes around names.** Plain top-aligned text labels (`text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=top;...`).
@@ -204,7 +197,15 @@ All line segments must be strictly horizontal or vertical. No diagonals, no curv
 
 - **Exported PNG may carry an alpha channel even when the page background is white.** Some viewers/platforms treat it as transparent. Flatten the PNG to RGB with a white background after export (e.g. composite the alpha channel onto `#ffffff` and save as RGB).
 
-- **Very wide charts may fail to render at `scale=2`.** The renderer can time out or return an empty file for charts wider than ~50,000 px at 2× scale. If `convert_file?scale=2` produces a 0-byte PNG, fall back to `scale=1` for the PNG. The SVG and `.drawio` source remain full resolution and zoomable.
+- **Very wide charts may fail to render at `scale=2`.** The local renderer (`tomkludy/drawio-renderer`) shells out to the draw.io desktop Electron app under `Xvfb`; Electron uses Chromium for raster export. Chromium has a maximum 2D canvas pixel area (commonly **268,435,456 pixels**, or roughly 32,767 × 32,767). A chart that is ~67,000 px wide and ~1,600 px tall becomes ~135,000 × 3,200 px at `scale=2`, i.e. ~449 million pixels, which exceeds that limit. The renderer then returns a 0-byte PNG with HTTP 200 and no useful stderr. If `convert_file?scale=2` produces an empty PNG, fall back to `scale=1` for the PNG (the helper script does this automatically). The SVG and `.drawio` source remain full resolution and zoomable.
+
+- **Stale draw.io renderer processes can accumulate.** A `scale=2` render that hits the canvas limit may leave the parent `drawio` process and its Chromium children hanging indefinitely inside the Docker container. Over time these consume memory and can interfere with later renders. Check for stale processes with:
+
+  ```bash
+  docker exec <container> ps -eo pid,etime,cmd | grep -E 'drawio|Xvfb'
+  ```
+
+  Kill old `drawio` parent PIDs (and their children) if they have been running far longer than any active render.
 
 - **Wide descendant charts are hard to read in messaging apps.** An all-descendants chart can easily exceed 8,000 px wide. The PNG preview will be downscaled in chat clients, making names unreadable. Always deliver the `.drawio` source and an SVG alongside the PNG, and tell the user the SVG/drawio files are the readable versions. See `references/descendant-chart-delivery.md` for a verification recipe and sample messaging wording.
 
@@ -270,6 +271,7 @@ When the user gives feedback:
 - Apply the smallest possible XML change.
 - Do not rewrite the whole diagram unless they explicitly ask to restart.
 - If a change makes it worse and they ask to revert, restore the last working version before trying something new.
+- **Never leave temporary "TEST" changes in the generator.** A quick throwaway line like `base_connector_y -= 200.0 # TEST` will silently corrupt every subsequent chart until it is removed. Treat any experimental shift as a single-edit experiment; revert it immediately after observing the result unless the user explicitly accepts it.
 - **Always verify the rendered image visually, not just with the linter.** A clean `validate.py` result (`0 error(s), 0 warning(s)`) does not mean the chart looks right. Browser vision and auxiliary vision models can fail on very wide charts or hallucinate details; use the pixel-level recipes in `references/visual-verification.md` when you cannot inspect the image directly.
 - **Trust the user's visual judgment.** If they say a chart "doesn't look good enough" or that a line "still overlaps" a name, the rendered image is the authority. Adjust geometry and re-render until the image looks balanced to a human eye.
 - **Do not argue from coordinate math when the user reports a visible defect.** If you cannot see the chart, render it, crop the affected area, and inspect the pixels. Geometry that says "no overlap" can still produce a rendered image that looks crowded or wrong.
@@ -293,7 +295,22 @@ When the user supplies a GEDCOM file, prefer the reusable generator rather than 
 - Siblings and single-child couples.
 - A recursive, bottom-up layout for descendant-only trees that guarantees no text-label overlaps (the chart simply grows wider where it needs to).
 
-**Pitfall:** ancestor-only charts are not descendant charts run in reverse. The same connector logic that staggers horizontal child connectors per spouse produces overlapping horizontal segments in ancestor mode, because many units in an ancestor generation can sit close enough that full-width parent-spanning connectors overlap. Use the dedicated recursive ancestor generator (`scripts/generate_ancestor_tree_recursive.py`), which builds the tree bottom-up and draws a single vertical descender from each couple's marriage line straight down to the child. See `references/ancestor-chart-edge-case.md` for the full failure mode and fix.
+**Pitfall: ambiguous root names.** `--root "Given Surname"` matches the first person in the GEDCOM with that exact name. If multiple people share the name (e.g. several John Roberts or William Monks), the generator may silently pick the wrong one. The output will still look correct, but it will be a chart for a different person. When the user gives a birth year (e.g. "John Roberts (b. 1831)"), resolve the ID first and use `--root-id`:
+
+  1. Search the GEDCOM for the name and birth year near an `0 @I... INDI` record.
+  2. Confirm the `1 BIRT` / `2 DATE` matches the requested year (and preferably place, if given).
+  3. Generate with `--root-id "@I18912699206@"` instead of `--root "John Roberts"`.
+
+  Examples from this session:
+  - `--root "John Roberts"` selected William John Frederick Roberts (only 4 units, depth 2); `--root-id "@I18912699206@"` produced the intended John Roberts (b. 1831) chart (103 units, depth 6).
+  - `--root "William Monk"` would have matched the first William Monk in the file; `--root-id "@I18912735545@"` produced the intended William Monk (b. 1835) chart.
+  - `--root "James Robinson"` would have matched a later James Robinson; `--root-id "@I252325507907@"` produced the intended James Robinson (b. 1805) chart.
+
+**Pitfall: alternate NAME lines in GEDCOM.** The GEDCOM standard allows multiple `1 NAME` records per individual; the first is the preferred name and later ones are alternates. The generator now keeps only the first `NAME` record. If you see a root rendered with an unexpected spelling (e.g. "James Robison" instead of "James Robinson"), check whether the individual has a later `NAME` line that was previously overwriting the preferred one.
+
+**Pitfall: unescaped double quotes in names break XML parsing.** Names such as `John Henry "Jack" Irvine` contain literal double quotes. If these are emitted raw inside a `value="..."` attribute, the `.drawio` file becomes malformed and `verify_family_tree.py` fails with `xml.etree.ElementTree.ParseError`. The generator now escapes `&`, `"`, `<`, and `>` in names, birth strings, and titles. For existing files with this problem, run `scripts/fix_drawio_value_quotes.py` and see `references/drawio-xml-quote-escaping.md`.
+
+**Pitfall:** ancestor-only charts are not descendant charts run in reverse. The same connector logic that staggers horizontal child connectors per spouse produces overlapping horizontal segments in ancestor mode, because many units in an ancestor generation can sit close enough that full-width parent-spanning connectors overlap. Use the dedicated recursive ancestor generator (`scripts/generate_ancestor_tree_recursive.py`), which builds the tree bottom-up and draws a single vertical descender from each couple's marriage line straight down to the child below. See `references/ancestor-chart-edge-case.md` for the full failure mode and fix.
 
 Example:
 
@@ -376,10 +393,16 @@ The output page is auto-fitted to the content bounding box with a small margin, 
 
 ### Support files
 
+- `references/paginated-family-trees.md` — splitting large trees into page-sized diagrams with numbered off-page continuation markers.
+- `references/paginated-ancestor-cli-debug-mismatch.md` — why ancestor pagination can differ between CLI and debug imports, and the relative-extent fix.
+- `scripts/paginated_tree_prototype.py` — minimal two-page prototype (Thomas Finigan → James Finigan) for the paginated approach.
+- `references/drawio-xml-quote-escaping.md` — malformed XML caused by unescaped double quotes in GEDCOM names, generator fix, and post-hoc repair script.
+- `scripts/fix_drawio_value_quotes.py` — idempotent repair script for `.drawio` files with raw double quotes inside `value="..."` attributes.
 - `references/pre-delivery-checklist.md` — step-by-step checklist: generate, render, run `verify_family_tree.py`, visually inspect, and deliver.
 - `references/descendant-chart-delivery.md` — delivering wide all-descendant charts: expected dimensions, readable formats, and a GEDCOM verification recipe.
 - `references/child-drop-continuity-fix.md` — why child drops now run up to the label and which validator overlaps to ignore.
-- `references/single-vs-couple-descenders.md` — exact descender geometry for single-parent vs couple groups and why per-group desired lengths are used.
+- `references/dynamic-descender-height.md` — how to compact a chart by adjusting `base_connector_y` rather than `descender_top`, and why getting this wrong breaks the layout.
+- `references/duplicate-person-markers.md` — handling pedigree collapse by marking duplicated individuals with superscript numbers and adding a legend.
 - `references/visual-verification.md` — how to inspect a rendered chart when vision tools fail, including pixel-level recipes and what "looks wrong" means beyond the linter.
 - `references/gedcom-to-visitation-tree.md` — full GEDCOM-to-tree workflow and layout algorithm.
 - `references/ancestor-chart-edge-case.md` — why ancestor-only charts need a dedicated bottom-up generator and how it differs from descendant charts.
@@ -394,6 +417,28 @@ The output page is auto-fitted to the content bounding box with a small margin, 
 - `scripts/generate_ancestor_tree_recursive.py` — dedicated bottom-up ancestor chart generator.
 - `scripts/generate_vertical_pedigree.py` — direct-line vertical pedigree generator.
 - `scripts/flatten_export.py` — render `.drawio` to PNG/SVG via localhost:8080, inject white SVG background, and flatten PNG alpha.
+
+## Paginated charts for book layout
+
+For large branches that exceed a single book page, split the tree into several page-sized diagrams linked by numbered off-page continuation markers. See `references/paginated-family-trees.md` for the full convention, design rationale, worked examples, and the prototype implementation.
+
+**Key convention:** on the parent page, the marker replaces the person's name label. The name appears only on the continuation page. Showing the name on both pages makes it look like two different people.
+
+**Branch-based, page-filling pagination:**
+- Pagination is always branch-based, and each page is filled as much as possible before using continuation markers.
+- Use dedicated paginated layouts rather than slicing the standard visitation layout. The standard layout can place the root in the middle of its descendants (or ancestors), making root-on-page-1 impossible without relayout.
+- The prototype at `/home/tv/paginated_prototype/generate_paginated_visitation_tree.py` supports both `--descendants-only --paginate` and `--ancestors-only --paginate`.
+- Descendants: root at the left edge, children fan rightward, child branches overflow to later pages.
+- Ancestors: focus person near the bottom, parents stacked upward, ancestor branches overflow to later pages.
+- Each continuation page starts with an incoming marker at the top (descendants) or bottom (ancestors) leading into the continued root.
+
+**Pitfall:** putting only the root couple on page 1 with a row of outgoing markers produces a nearly empty first page. Fill the page with branches first, and only break out a branch when it does not fit. The recursive, page-filling algorithm in `references/paginated-family-trees.md` keeps sibling groups intact and avoids this empty-page problem.
+
+**Pitfall:** do not reuse descendant connectors for ancestor paginated charts. Descendant markers sit above/below and connectors point downward; ancestor markers sit below/above and connectors point upward. The prototype selects the connector function based on `mode`.
+
+**Pitfall:** ancestor pagination fit tests operate on absolute `y` coordinates. Changing the root `start_y` between a debug snippet and the CLI can make the same tree paginate differently. Keep the layout and paginator in sync. See `references/paginated-family-trees.md`.
+
+**Pitfall:** upward ancestor connectors must still be emitted as draw.io cells with positive `height` (upper y + positive height = lower y). Negative heights produce validator warnings and may disappear in export. See `references/paginated-family-trees.md`.
 
 ## Vertical direct-line pedigree
 
