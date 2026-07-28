@@ -11,7 +11,59 @@ Do not treat a clean linter result as proof that the chart is good. Always verif
 
 ## When vision tools fail
 
-Browser-based vision and auxiliary vision models can fail to render very wide PNGs or SVGs, or may hallucinate details. If the vision tools cannot show you the chart, fall back to pixel-level inspection with Python/PIL.
+Browser-based vision and auxiliary vision models can fail to render very wide PNGs or SVGs, or may hallucinate details. **They can also misread closely spaced family-tree labels and lines** — for example, mistaking an Olivia–Douglas marriage line for a Douglas–Michael line, or assigning children to the wrong couple. If relationship correctness matters, verify by parsing the generated `.drawio` XML directly rather than relying solely on a vision model.
+
+### Parse positions and lines from the `.drawio` source
+
+```python
+import xml.etree.ElementTree as ET
+import re
+
+def analyse_drawio(path):
+    root = ET.fromstring(open(path).read())
+    people = {}
+    for cell in root.iter('mxCell'):
+        style = cell.get('style', '')
+        value = cell.get('value', '') or ''
+        if not ('rounded=1' in style or 'text;' in style):
+            continue
+        geom = cell.find('mxGeometry')
+        if geom is None:
+            continue
+        clean = re.sub(r'<[^>]+>', '', value).strip()
+        if not clean:
+            continue
+        people[cell.get('id')] = {
+            'name': clean,
+            'x': float(geom.get('x', 0)),
+            'y': float(geom.get('y', 0)),
+            'w': float(geom.get('width', 0)),
+            'h': float(geom.get('height', 0)),
+        }
+
+    # Marriage lines are shape=line;direction=east cells, usually ids m1a, m1b, m2a, ...
+    lines = []
+    for cell in root.iter('mxCell'):
+        style = cell.get('style', '')
+        if 'shape=line;direction=east' not in style:
+            continue
+        geom = cell.find('mxGeometry')
+        if geom is None:
+            continue
+        lines.append({
+            'id': cell.get('id'),
+            'x': float(geom.get('x', 0)),
+            'y': float(geom.get('y', 0)),
+            'w': float(geom.get('width', 0)),
+        })
+
+    return people, lines
+```
+
+Use this to confirm:
+- A marriage line spans from the right edge of the left spouse to the left edge of the right spouse.
+- A vertical descender (`v*` cell, `shape=rect` with dark fill) is centred on the expected marriage midpoint.
+- Child drops (`c*` cells) are centred on the correct child boxes.
 
 ### ASCII preview of a region
 

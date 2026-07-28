@@ -1,7 +1,7 @@
 ---
 name: drawio-family-trees
 description: Create clean, minimal family tree / pedigree diagrams in draw.io from GEDCOM or hand-rolled data. Optimised for clarity and avoiding the common visual artefacts that make hand-built trees look wrong.
-version: 1.23.0
+version: 1.24.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -25,15 +25,22 @@ These conventions produced the final Short-family chart and should be treated as
 2. **Connectors touch blood children only.** The horizontal child connector spans the blood-child centres. Vertical child-drop lines terminate at the blood child's top edge, never at a marriage separator.
 3. **Descenders come from the parent's marriage centre.** The vertical line from a parent couple drops from the midpoint of their double marriage line, meets the child connector, then branches to each blood child.
 4. **Marriage lines sit at the visual centre/baseline of the name labels.** The double marriage line is drawn behind the labels (`fillColor=#ffffff`) so the names remain perfectly legible. The line sits roughly two-thirds down the text box, keeping spouses visually aligned; it does not dangle below the names.
-5. **Multiple spouses.** The blood person stays in the centre; spouses alternate right/left, ordered by child-count descending (largest child group on the outside). Each marriage's children form a contiguous block descending from that marriage line. Children are ascribed to the correct spouse using the GEDCOM `FAMC` link. The horizontal **child connectors** for different spouses are staggered vertically (**4 px per spouse**), with the **rightmost group highest** so descenders never cross. The connector always extends from the marriage line to the outermost child, so children sitting far to the side remain visibly connected to the right parent. The marriage double-lines themselves remain at the same height.
+5. **Multiple spouses.** The blood person stays in the centre; spouses alternate right/left, ordered by child-count descending (largest child group on the outside). Each marriage's children form a contiguous block descending from that marriage line. Children are ascribed to the correct spouse using the GEDCOM `FAMC` link. The horizontal **child connectors** for different spouses are staggered vertically (**4 px per spouse**), with the **rightmost group highest** so descenders never cross. The connector always extends from the marriage line to the outermost child, so children sitting far to the side remain visibly connected to the right parent. The marriage double-lines themselves remain at roughly the same height. **Overlapping marriage lines in the same unit all share the same y-coordinate.** When a blood person has several spouses to the right, each marriage indicator is drawn from the blood person's right edge to that spouse's left edge. The segments overlap, so the line to the farthest spouse simply overlays the shorter ones; labels are drawn on top with a white background, so the result is a single continuous line that does not show through the names. Do **not** stagger overlapping marriage lines vertically — that produces misaligned indicators (e.g. a line that looks too high, or a doubled segment between two spouses).
+   - **Non-descendants with multiple spouses.** When a spouse who married into the family had several previous partners, all of those partners are married to the current spouse, not to each other. The marriage-line pairs must run from the current spouse to each additional spouse; do not chain them spouse-to-spouse.
+   
+   **Step-children are an exception.** When `--include-step-children` is used, a spouse's previous partners are added as additional spouses on the **opposite side** of the blood person's current spouse (typically extending rightward for a descendant). They keep their GEDCOM order and are **not** reordered by child count, because the current spouse must stay adjacent to the blood person and each step-parent must stay adjacent to the current spouse for the marriage lines to read correctly. See `references/step-children-gedcom.md` for the full implementation and verification notes.
+   
+   - **Step-parent marriage lines.** A step-parent is married to the blood person's current spouse, not to the blood person. Draw a marriage indicator between the current spouse and every step-parent, even when that marriage produced no children who appear in the chart. Do not make the line conditional on `spouse_children` being non-empty.
+   
+   **Pitfall:** `--all-descendants` only follows bloodlines when auto-detecting depth, so it will not include deeper step-children branches. With `--include-step-children`, specify `--generations N` explicitly (or pick a generous `N` and check the output), because `--all-descendants` cannot see a spouse's previous marriages.
 6. **Recursive, overlap-free layout for large descendant trees.** For descendant-only charts the generator uses a bottom-up subtree layout: each subtree is sized to its contents, parent units are centred over their children, and sibling subtrees are separated by a minimum gap. This guarantees no text-label overlaps; the chart grows as wide as necessary.
 7. **Ancestor charts are built bottom-up.** Use the dedicated recursive ancestor generator. Start with the focus person, place their parents above them, then each parent's parents, and so on. Each couple gets a double marriage line and a single vertical descender straight down to the child below. The child is centred under the couple.
 8. **Keep the focus person centred in ancestor charts.** The root generation is anchored at the page centre and is not shifted by ancestor overlap resolution.
 - **Deduplicate lines for pedigree collapse.** The same ancestor may appear above the same child through multiple lines of descent. Emit only one line segment for identical parent→child geometry, and give duplicate person occurrences unique cell IDs.
 - **Duplicate-person markers.** When the same individual appears in multiple places on the same chart (e.g. due to cousin intermarriage / pedigree collapse), append a Unicode superscript marker (¹, ², ³…) to every occurrence of that person's name and add a short legend. The marker itself is the indication that the labels refer to the same person; the person is still drawn in each position so the branch structure remains clear. See `references/duplicate-person-markers.md`.
-- **Adaptive Vertical Spacing:** To prevent labels with wrapped text from overlapping connectors, the generator dynamically calculates the maximum label height (`MAX_LABEL_H`) across the dataset.
+- **Adaptive Vertical Spacing:** To prevent labels with wrapped text from overlapping connectors, the generator dynamically calculates the maximum label height (`MAX_LABEL_H`) **among the people actually appearing in the chart**. This prevents a huge unrelated name elsewhere in the GEDCOM from inflating the spacing of a focused tree.
     - **Dynamic Generation Height:** `CURRENT_GEN_H` scales automatically: `DEFAULT_GENERATION_HEIGHT + (MAX_LABEL_H - DEFAULT_TEXT_H)`.
-    - **Dynamic Descenders:** The vertical distance from the parent label to the horizontal child connector is driven by `base_connector_y`. To make the chart more compact, apply a negative offset to `base_connector_y` **after** it has been computed from `descender_top + desired_length`. Do **not** apply the offset to `descender_top`: that moves the start of the line up while leaving the sibling bar in place, which actually lengthens the line and can push connectors into the labels above or off the top of the page. See `references/dynamic-descender-height.md`.
+    - **Dynamic Descenders:** The vertical distance from the parent label to the horizontal child connector is driven by `base_connector_y`. To keep the drop from the sibling bar down to each child name short, cap `base_connector_y` relative to `child_y` using `MAX_CHILD_NAME_DROP` rather than applying a fixed negative offset to a globally-computed value. See `references/dynamic-descender-height.md`.
     - **Height Estimation:** The `estimate_label_height` helper approximates text wrapping based on a ~14 character per line limit.
 11. **Auto-fitted page.** The draw.io page is sized to the content bounding box plus a small margin; no surrounding whitespace.
 12. **Intermarried ancestors.** When two people from different families marry (e.g. Alexander Short & Elsie Finigan), each set of parents is centred over its own child. The marriage gap between the intermarried couple widens as needed so the parent units do not overlap.
@@ -73,11 +80,11 @@ If the user wants a tree from a GEDCOM file:
    ```bash
    python3 ~/.hermes/skills/drawio-family-trees/scripts/verify_family_tree.py family_tree.drawio
    ```
-   Do not treat a non-zero warning count as acceptable. A deliverable descendant chart must report:
-   ```
-   All checks passed. The chart is safe to deliver.
-   ```
-5. If the checker reports issues, dig deeper:
+   Treat the checker as a guardrail, not a gate:
+   - **Connector overlaps** between different family units (overlapping `h*` / `v*` / `c*` segments from unrelated marriages) are real defects and must be fixed.
+   - **Marriage-line-to-label overlaps** are expected: the double marriage lines are drawn behind the white-filled name labels, so the linter sees geometry overlap even though the rendered image is clean.
+   - A chart that reports **"0 error(s), connector check OK"** and only marriage-line-under-label warnings is safe to deliver. Do not chase those warnings by moving marriage lines downward — that collides with child connectors. If in doubt, visually inspect the PNG.
+5. If the checker reports **real** issues (connector overlaps between different units, generational collapse, negative-size vertices), dig deeper:
    - Run `validate.py` directly for the raw linter output.
    - Verify generational separation: a correct chart has one distinct y-value per generation, not all names clustered on one or two horizontal lines.
    - Verify connector separation: horizontal child connectors from different parent units must not overlap horizontally at the same y-level.
@@ -174,7 +181,8 @@ All line segments must be strictly horizontal or vertical. No diagonals, no curv
 2. **Thick filled junction bars.** The child connector should be a thin line, not a dark grey rectangle.
 3. **Visible breaks in the descender.** Keep the horizontal child connector thin and centred so the vertical descender looks continuous.
 4. **Inconsistent line weights.** Use the same `strokeWidth` for marriage lines, descenders, child connectors, and child lines.
-5. **Ambiguous parentage.** It must be visually obvious which children belong to which couple. Use separate child connectors per marriage.
+5. **Running child-drop lines into labels.** Child drops should stop just above the label top (typically `child.y - 4.0`); use the 1 px descender extension trick to close the gap for only children, rather than running the drop through the text.
+6. **Staggering overlapping marriage lines vertically.** When one person has several spouses, all marriage indicators must be drawn at the same y-coordinate. Duplicate segments overlay each other and are hidden by the white-filled labels; staggering them up or down makes some indicators look misaligned or creates spurious lines between unrelated spouses. If a user reports that an indicator looks **doubled vertically** or that a line between two spouses appears **too high**, check for a `pair_idx * spacing` offset in the marriage-line loop and remove it.
 
 ## Renderer / export pitfalls
 
@@ -268,6 +276,7 @@ Draw the double marriage line as two `shape=line;direction=east` segments, typic
 ## Iteration rules
 
 When the user gives feedback:
+- When the user asks to verify a visual fix, **regenerate and show the rendered image immediately**. Do not get stuck rerunning the validator or debating coordinate math — the user's eye is the final authority, and the fastest path to confirmation is a fresh PNG/SVG.
 - Apply the smallest possible XML change.
 - Do not rewrite the whole diagram unless they explicitly ask to restart.
 - If a change makes it worse and they ask to revert, restore the last working version before trying something new.
@@ -374,18 +383,17 @@ The generator is tuned for compact book-page output by default:
 - Minimum gap between sibling units: `MIN_SIBLING_GAP = 12`
 - Generation height: `GENERATION_HEIGHT = 105`
 - Double marriage line offset/gap: `MARRIAGE_Y_OFFSET = 18`, `MARRIAGE_LINE_GAP = 3`
-- **Desired descender length is per group**: **45 px for single-parent groups**, **63 px for couple groups**. The horizontal child-bar base for a unit is set to the highest required end among its groups, then each group to the left is staggered 4 px lower. This keeps couple-only sections unchanged while giving single-parent descenders a shorter, cleaner drop.
+- **Desired descender length is per group**: **45 px for single-parent groups**, **63 px for couple groups**. These give a comfortable parent-to-sibling-bar drop. The horizontal child-bar base for a unit is computed from the highest required end among its groups, then each group to the left is staggered 4 px lower.
 - Stagger between connectors of different spouses: **4 px**. A smaller stagger keeps left-hand groups from dropping back too close to their children's names.
-- **Single-parent vertical descenders start **20 px below the bottom of the parent text box** (`descender_top = y + TEXT_H + 20.0`), not at the text centre, so the line clearly begins below the name.
-- Vertical drops from the sibling bar run **up to the child's label** (`child.y - connector_y` in the generator) and are hidden by the white background rect. This removes the tiny 3–4 px break that otherwise appears above each name, which is especially noticeable for an only child in the last generation.
-- Stagger between connectors of different spouses: **4 px**. A smaller stagger keeps left-hand groups from dropping back too close to their children's names.
+- **Single-parent vertical descenders start at the bottom of the parent text box** (`descender_top = y + MAX_LABEL_H`), not at the text centre, so the line clearly begins below the name.
+- **Cap the sibling-bar-to-child-name drop.** After the base bar height is computed from the parent side, raise it if necessary so the vertical drop from the bar to each child name stays short (`MAX_CHILD_NAME_DROP = 22 px`). This prevents the bar from hovering halfway between parent and child, which wastes vertical space and makes the child-name drops look too long. The parent-to-bar drop is then allowed to absorb the extra room.
 **Pitfall — child drops can look broken just above a name.** If a vertical drop stops 3–4 px above the child's label, the gap can read as a break, especially for an only child in the last generation where there is no horizontal sibling bar to mask it. The fix is **not** to run the drop into the label; instead, **extend the parent descender 1 px below the horizontal child-bar** (`vline(..., connector_y + 1.0 - descender_top)`). When a sibling bar is present it hides the 1 px extension; when it is absent (only child), the extension meets the child drop and closes the gap. Keep the child drop starting at `connector_y + 1.0` and ending at `child.y - 4.0`. Update the structural linter to ignore the intentional overlaps between the child-drop line, the horizontal/vertical connector segments it meets, and the label background only when the drop genuinely terminates at the label top.
 
-**Pitfall — child drops can become too short.** With the drop running up to the label, the visible portion is roughly **17–21 px**, which is long enough to read as a deliberate connector. If the rendered drops look like tiny floating ticks, the horizontal bar has been raised too far; increase the connector base offset slightly. If they look long enough but the names still feel crowded, see the next pitfall.
+**Pitfall — child drops can become too short.** The child-name drop is capped at roughly **22 px** by `MAX_CHILD_NAME_DROP`. If the rendered drops look like tiny floating ticks, increase `MAX_CHILD_NAME_DROP` slightly so the bar sits higher. If they look too long, decrease it. Verify the rendered image, not just the linter.
 
-**Pitfall — child names look crowded or obscured by the sibling bar.** If the horizontal child connector feels too close to the names below it — so that the descender from the bar seems to crowd or overlap the text visually — the fix is to **raise the bar**, not to lower the child text. Shorten the long vertical descender from the parent's marriage line by reducing the connector base offset (e.g. from 55 px to 45 px). If multiple spouses produce staggered left-hand groups, reduce `CHILD_CONNECTOR_STAGGER` as well (e.g. from 6 px to 4 px) so those groups do not drop back into the names. Verify the rendered image, not just the linter.
+**Pitfall — child names look crowded or obscured by the sibling bar.** If the horizontal child connector feels too close to the names below it, the bar has been lowered too far. Increase `MAX_CHILD_NAME_DROP` to raise the bar and lengthen the child-name drop. If multiple spouses produce staggered left-hand groups, reduce `CHILD_CONNECTOR_STAGGER` as well (e.g. from 6 px to 4 px) so those groups do not drop back into the names. Verify the rendered image, not just the linter.
 
-**Pitfall — parent names look cut or overlapped by the child connector.** If vertical descenders from a parent or the horizontal child bars feel too close to parent names, first ensure every label has an explicit white background rect drawn behind it. Then tune geometry: for single parents, lower the descender start (`descender_top = y + TEXT_H + 20.0`); for couples, lengthen the descender by increasing the desired couple length (default 63 px) or increasing `GENERATION_HEIGHT` to create more vertical room. Verify the rendered image.
+**Pitfall — parent names look cut or overlapped by the child connector.** If vertical descenders from a parent or the horizontal child bars feel too close to parent names, first ensure every label has an explicit white background rect drawn behind it. Then tune geometry: for single parents, the descender starts at the bottom of the label (`descender_top = y + MAX_LABEL_H`); for couples, lengthen the descender by increasing the desired couple length (default 63 px) or increasing `GENERATION_HEIGHT` to create more vertical room. Verify the rendered image.
 
 **Pitfall — horizontal connectors can dominate the chart.** When one parent's children have very wide subtrees, the horizontal connector for that marriage can stretch thousands of pixels. The layout is technically correct, but visually it can make the tree look lopsided. If this happens, check whether siblings are spaced farther apart than necessary (`MIN_SIBLING_GAP`) or whether a branch could be split onto a separate page.
 
@@ -399,8 +407,11 @@ The output page is auto-fitted to the content bounding box with a small margin, 
 - `references/drawio-xml-quote-escaping.md` — malformed XML caused by unescaped double quotes in GEDCOM names, generator fix, and post-hoc repair script.
 - `scripts/fix_drawio_value_quotes.py` — idempotent repair script for `.drawio` files with raw double quotes inside `value="..."` attributes.
 - `references/pre-delivery-checklist.md` — step-by-step checklist: generate, render, run `verify_family_tree.py`, visually inspect, and deliver.
-- `references/descendant-chart-delivery.md` — delivering wide all-descendant charts: expected dimensions, readable formats, and a GEDCOM verification recipe.
+- `references/descendants-generator-recent-fixes.md` — recent changes to `generate_descendants_with_steps.py` (dynamic height, short child-name drops, step-parent marriage lines, non-descendant pair logic, marriage-line same-y overlay) and copy/paste command patterns.
 - `references/child-drop-continuity-fix.md` — why child drops now run up to the label and which validator overlaps to ignore.
+- `references/workflow-conventions.md` — where to do development (git repo), where to put output (home folder), and how to test changes.
+- `references/spouse-placement-rules.md` — rules for arranging multiple spouses: descendants extend right, non-descendants' other spouses extend opposite from the descendant they married, and the "exactly 2 spouses" special case.
+- `references/step-children-gedcom.md` — handling step-children from previous marriages in GEDCOM-based charts; documents the `--include-step-children` flag in `generate_descendants_with_steps.py`.
 - `references/dynamic-descender-height.md` — how to compact a chart by adjusting `base_connector_y` rather than `descender_top`, and why getting this wrong breaks the layout.
 - `references/duplicate-person-markers.md` — handling pedigree collapse by marking duplicated individuals with superscript numbers and adding a legend.
 - `references/visual-verification.md` — how to inspect a rendered chart when vision tools fail, including pixel-level recipes and what "looks wrong" means beyond the linter.
@@ -414,6 +425,7 @@ The output page is auto-fitted to the content bounding box with a small margin, 
 - `references/minimal-family-tree.md` — minimal worked example.
 - `scripts/parse_gedcom.py` — reusable minimal GEDCOM parser.
 - `scripts/generate_visitation_tree.py` — GEDCOM to draw.io XML generator (descendants and hourglass trees).
+- `scripts/generate_descendants_with_steps.py` — Extended generator with `--include-step-children` support for blended families (step-children from spouses' previous marriages).
 - `scripts/generate_ancestor_tree_recursive.py` — dedicated bottom-up ancestor chart generator.
 - `scripts/generate_vertical_pedigree.py` — direct-line vertical pedigree generator.
 - `scripts/flatten_export.py` — render `.drawio` to PNG/SVG via localhost:8080, inject white SVG background, and flatten PNG alpha.
