@@ -81,7 +81,7 @@ def count_generations(drawio_path: str) -> int:
 
 def find_connector_overlaps(
     drawio_path: str, y_tolerance: float = 3.0
-) -> list[tuple[str, str, float, float, float, float, float]]:
+) -> list[tuple[str, str, float, float, float, float, float, float]]:
     """Find horizontal child connectors that overlap horizontally within y_tolerance."""
     tree = ET.parse(drawio_path)
     h_lines = []
@@ -108,51 +108,74 @@ def find_connector_overlaps(
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <family_tree.drawio>", file=sys.stderr)
+    args = [a for a in sys.argv[1:] if a != "--terse"]
+    terse = "--terse" in sys.argv
+    if len(args) < 1:
+        print(f"Usage: {sys.argv[0]} [--terse] <family_tree.drawio>", file=sys.stderr)
         return 2
 
-    drawio_path = sys.argv[1]
+    drawio_path = args[0]
     ok = True
 
-    print(f"Verifying {drawio_path}\n")
+    if not terse:
+        print(f"Verifying {drawio_path}\n")
 
     errors, warnings, lint_output = run_validate(drawio_path)
-    print("1. Structural linter")
+    if terse:
+        print(f"1. linter: {errors} error(s), {warnings} warning(s)")
+    else:
+        print("1. Structural linter")
     if errors == 0 and warnings == 0:
-        print("   OK: 0 error(s), 0 warning(s)")
+        if not terse:
+            print("   OK: 0 error(s), 0 warning(s)")
     else:
         ok = False
-        print(f"   FAIL: {errors} error(s), {warnings} warning(s)")
-        print("   Linter output:")
-        for line in lint_output.splitlines():
-            print(f"      {line}")
+        if not terse:
+            print(f"   FAIL: {errors} error(s), {warnings} warning(s)")
+            print("   Linter output:")
+            for line in lint_output.splitlines():
+                print(f"      {line}")
 
     generations = count_generations(drawio_path)
-    print(f"\n2. Generational separation")
-    print(f"   Distinct label y-values: {generations}")
-    if generations < 3:
-        ok = False
-        print("   FAIL: labels are collapsed onto too few horizontal lines")
+    if terse:
+        print(f"2. generations: {generations} distinct label y-values")
+        if generations < 3:
+            ok = False
+            print("   FAIL: labels collapsed onto too few rows")
+    else:
+        print(f"\n2. Generational separation")
+        print(f"   Distinct label y-values: {generations}")
+        if generations < 3:
+            ok = False
+            print("   FAIL: labels are collapsed onto too few horizontal lines")
 
     overlaps = find_connector_overlaps(drawio_path)
-    print(f"\n3. Connector overlap check")
-    if not overlaps:
-        print("   OK: no overlapping horizontal child connectors")
+    if terse:
+        if overlaps:
+            ok = False
+            print(f"3. connectors: FAIL {len(overlaps)} overlapping pair(s)")
+        else:
+            print("3. connectors: OK")
     else:
-        ok = False
-        print(f"   FAIL: {len(overlaps)} overlapping connector pair(s)")
-        for id1, id2, y1, y2, x1a, x1b, x2a, x2b in overlaps[:10]:
-            print(
-                f"      {id1} (y={y1:.1f}, x={x1a:.1f}-{x1b:.1f}) overlaps "
-                f"{id2} (y={y2:.1f}, x={x2a:.1f}-{x2b:.1f})"
-            )
+        print(f"\n3. Connector overlap check")
+        if not overlaps:
+            print("   OK: no overlapping horizontal child connectors")
+        else:
+            ok = False
+            print(f"   FAIL: {len(overlaps)} overlapping connector pair(s)")
+            for id1, id2, y1, y2, x1a, x1b, x2a, x2b in overlaps[:10]:
+                print(
+                    f"      {id1} (y={y1:.1f}, x={x1a:.1f}-{x1b:.1f}) overlaps "
+                    f"{id2} (y={y2:.1f}, x={x2a:.1f}-{x2b:.1f})"
+                )
 
-    print()
     if ok:
-        print("All checks passed. The chart is safe to deliver.")
+        print("PASS" if terse else "\nAll checks passed. The chart is safe to deliver.")
         return 0
-    print("Some checks failed. Do not deliver the chart without fixing the issues above.")
+    if terse:
+        print("FAIL (rerun without --terse for detail)")
+    else:
+        print("\nSome checks failed. Do not deliver the chart without fixing the issues above.")
     return 1
 
 

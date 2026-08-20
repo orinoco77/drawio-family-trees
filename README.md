@@ -33,7 +33,6 @@ python3 scripts/generate_visitation_tree.py \
     --gedcom "family.ged" \
     --root-id "@I123@" \
     --all-descendants \
-    --descendants-only \
     --title "Descendants of William Short" \
     --font-family "Times New Roman" \
     --output descendants.drawio
@@ -76,13 +75,15 @@ The verifier runs:
 
 | Script | Purpose |
 |---|---|
-| `generate_visitation_tree.py` | GEDCOM → draw.io (descendants and hourglass trees). |
+| `generate_visitation_tree.py` | GEDCOM → draw.io descendant-only tree. |
+| `generate_descendants_with_steps.py` | GEDCOM → draw.io descendant-only tree with step-children support. |
 | `generate_ancestor_tree_recursive.py` | GEDCOM → draw.io ancestor-only tree. |
 | `generate_vertical_pedigree.py` | GEDCOM → direct-line vertical pedigree. |
 | `flatten_export.py` | Render `.drawio` to PNG/SVG via localhost renderer. |
 | `validate.py` | Structural linter for `.drawio` files. |
 | `verify_family_tree.py` | Pre-delivery checker (linter + geometry checks). |
 | `parse_gedcom.py` | Minimal reusable GEDCOM parser. |
+| `gedcom_query.py` | Compact GEDCOM queries (search/show/tree/stats) with disk cache — use this instead of reading the `.ged` file. |
 
 ## Documentation
 
