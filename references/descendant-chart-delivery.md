@@ -2,7 +2,7 @@
 
 ## When this applies
 
-You have used `generate_visitation_tree.py` with `--all-descendants` or `--descendants-only` and produced a chart that spans many generations. These charts grow wide quickly because every branch must remain contiguous and every name must remain readable.
+You have used `generate_visitation_tree.py` with `--all-descendants` and produced a chart that spans many generations. These charts grow wide quickly because every branch must remain contiguous and every name must remain readable.
 
 ## What to expect
 

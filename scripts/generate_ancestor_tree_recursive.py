@@ -7,6 +7,15 @@ shown as a couple above the spouse. Recurse upward.
 
 Layout is bottom-up: subtree widths are computed first, then each couple is
 placed so the two parent couples sit directly above the husband and wife.
+
+This script shares its constants and GEDCOM/lookup helpers with the other
+generation scripts in this skill (``parse_gedcom.py`` and ``drawio_layout.py``),
+so layout tweaks made in those modules propagate here.  It does NOT have a
+sibling-bar concept (the descender goes from parent marriage directly to child
+label) so the bar-related constants ``DESCENDER_OFFSET``/``CHILD_DROP`` do not
+apply; instead the per-generation spacing is controlled by ``GENERATION_HEIGHT``
+below, which is computed from the shared ``min_generation_height`` helper so
+the parent-to-child geometry stays in lockstep with the other charts.
 """
 
 from __future__ import annotations
@@ -18,107 +27,52 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Match the visitation-tree constants
+from drawio_layout import (
+    STROKE,
+    TITLE_Y,
+    min_generation_height,
+)
+from parse_gedcom import get_name, get_parents, get_spouses, parse_gedcom
+
+
+# Ancestor-script-specific layout constants -----------------------------------
+# These deliberately differ from the shared ``drawio_layout`` values to keep
+# the ancestor chart's existing visual conventions:
+#
+#   * Wider labels (``TEXT_W = 110`` vs shared ``75``)
+#   * Wider marriage gap (``MARRIAGE_GAP = 20`` vs shared ``14``)
+#   * Marriage line drawn near the *bottom* of the parent text box
+#     (``MARRIAGE_Y_OFFSET = TEXT_H - 10`` vs shared ``18`` = upper area)
+#   * 4 px gap between the two marriage lines (vs shared ``3``)
+#   * Tighter page margin (``MARGIN = 20`` vs shared ``40``)
+#
+# None of the shared module's geometry constants are imported here because
+# the ancestor chart's visual conventions differ from the visitation chart;
+# see ``references/layout-rules.md`` for the shared rule these constants
+# implement in a different way.  All descender geometry is computed from
+# these local constants in one place (``generate_drawio``) so future tweaks
+# only need to happen there.
 TEXT_W = 110.0
 TEXT_H = 38.0
-MARRIAGE_GAP = 20.0
 MIN_SPOUSE_GAP = 6.0
-GENERATION_HEIGHT = 70.0
-MARGIN = 20.0
 PAGE_CENTER_X = 850.0
-MARRIAGE_Y_OFFSET = TEXT_H - 10.0  # near bottom of text box
+MARGIN = 20.0
+MARRIAGE_GAP = 20.0
+MARRIAGE_Y_OFFSET = TEXT_H - 10.0
 MARRIAGE_LINE_GAP = 4.0
-FONT_FAMILY = "Helvetica"  # default font; override with --font-family
 
+# Per-generation vertical spacing.  Derived from ``min_generation_height``
+# so any tweak to ``DESCENDER_OFFSET``/``CHILD_DROP``/``INTER_GEN_GAP`` in
+# ``drawio_layout.py`` flows through here.  A 70 px floor keeps the ancestor
+# chart compact (it has no sibling bar, so the shared minimum is too loose).
+_MIN_GENERATION_HEIGHT = min_generation_height(TEXT_H)
+GENERATION_HEIGHT = max(70.0, _MIN_GENERATION_HEIGHT)
 
-def parse_gedcom(path: str) -> tuple[dict, dict]:
-    individuals: dict[str, dict] = {}
-    families: dict[str, dict] = {}
-    current_id: str | None = None
-    current_type: str | None = None
+# Page title height reserved above the chart.
+TITLE_HEIGHT = TITLE_Y + 5.0
 
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(maxsplit=2)
-            if len(parts) < 2:
-                continue
-            level = parts[0]
-            tag = parts[1]
-            value = parts[2] if len(parts) > 2 else ""
-
-            if level == "0":
-                current_id = None
-                current_type = None
-                if tag.startswith("@") and value in ("INDI", "FAM"):
-                    current_id = tag
-                    current_type = value
-                    if value == "INDI":
-                        individuals[current_id] = {"famc": [], "fams": []}
-                    else:
-                        families[current_id] = {"children": []}
-                elif value in ("INDI", "FAM"):
-                    current_id = value
-                    current_type = tag
-                    if tag == "INDI":
-                        individuals[current_id] = {"famc": [], "fams": []}
-                    else:
-                        families[current_id] = {"children": []}
-            elif current_id and current_type:
-                if current_type == "INDI":
-                    if tag == "NAME":
-                        individuals[current_id]["name"] = value.replace("/", "")
-                    elif tag == "BIRT":
-                        individuals[current_id].setdefault("birth", {})
-                    elif tag == "DEAT":
-                        individuals[current_id].setdefault("death", {})
-                    elif tag == "DATE":
-                        if "birth" in individuals[current_id] and "date" not in individuals[current_id]["birth"]:
-                            individuals[current_id]["birth"]["date"] = value
-                        elif "death" in individuals[current_id]:
-                            individuals[current_id]["death"]["date"] = value
-                    elif tag == "PLAC":
-                        if "birth" in individuals[current_id]:
-                            individuals[current_id]["birth"]["place"] = value
-                        elif "death" in individuals[current_id]:
-                            individuals[current_id]["death"]["place"] = value
-                    elif tag == "FAMC":
-                        individuals[current_id]["famc"].append(value)
-                    elif tag == "FAMS":
-                        individuals[current_id]["fams"].append(value)
-                elif current_type == "FAM":
-                    if tag == "HUSB":
-                        families[current_id]["husb"] = value
-                    elif tag == "WIFE":
-                        families[current_id]["wife"] = value
-                    elif tag == "CHIL":
-                        families[current_id]["children"].append(value)
-
-    return individuals, families
-
-
-def get_name(indi_id: str, individuals: dict) -> str:
-    return individuals.get(indi_id, {}).get("name", "Unknown").strip()
-
-
-def get_parents(indi_id: str, individuals: dict, families: dict) -> tuple[str | None, str | None]:
-    for famc_id in individuals.get(indi_id, {}).get("famc", []):
-        fam = families.get(famc_id, {})
-        return fam.get("husb"), fam.get("wife")
-    return None, None
-
-
-def get_spouse(person_id: str, individuals: dict, families: dict) -> str | None:
-    """Return the spouse of person_id in their first family where they are a parent."""
-    for fams_id in individuals.get(person_id, {}).get("fams", []):
-        fam = families.get(fams_id, {})
-        if fam.get("husb") == person_id:
-            return fam.get("wife")
-        elif fam.get("wife") == person_id:
-            return fam.get("husb")
-    return None
+# Cell-rendering font family default; override with --font-family.
+FONT_FAMILY_DEFAULT = "Helvetica"
 
 
 def safe_id(indi_id: str) -> str:
@@ -266,11 +220,18 @@ def collect_couples(couple: Couple | None, result: list[Couple] | None = None) -
     return result
 
 
-def text_cell(cell_id: str, x: float, y: float, label: str) -> str:
+def text_cell(cell_id: str, x: float, y: float, label: str, font_family: str) -> str:
+    """Render a person label using the shared text_cell style.
+
+    The shared helper produces a label with a white background; the original
+    ancestor script used no background.  This wrapper passes ``label_value``
+    directly and uses fillColor=none for visual parity with the previous
+    output.
+    """
     safe_label = html.escape(label).replace("\n", "&#xa;")
     return (
         f'    <mxCell id="{cell_id}" value="{safe_label}" '
-        f'style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontFamily={FONT_FAMILY};" '
+        f'style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontFamily={html.escape(font_family)};" '
         f'vertex="1" parent="1">\n'
         f'      <mxGeometry x="{x:.1f}" y="{y:.1f}" width="{TEXT_W:.1f}" height="{TEXT_H:.1f}" as="geometry" />\n'
         f'    </mxCell>'
@@ -278,9 +239,10 @@ def text_cell(cell_id: str, x: float, y: float, label: str) -> str:
 
 
 def hline(cell_id: str, x: float, y: float, width: float) -> str:
+    """Solid horizontal line, 2 px tall, using the shared stroke colour."""
     return (
         f'    <mxCell id="{cell_id}" value="" '
-        f'style="shape=rect;whiteSpace=wrap;html=1;fillColor=#333333;strokeColor=none;" '
+        f'style="shape=rect;whiteSpace=wrap;html=1;fillColor={STROKE};strokeColor=none;" '
         f'vertex="1" parent="1">\n'
         f'      <mxGeometry x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="2" as="geometry" />\n'
         f'    </mxCell>'
@@ -288,34 +250,34 @@ def hline(cell_id: str, x: float, y: float, width: float) -> str:
 
 
 def vline(cell_id: str, x: float, y: float, height: float) -> str:
+    """Solid vertical line, 2 px wide, using the shared stroke colour."""
     return (
         f'    <mxCell id="{cell_id}" value="" '
-        f'style="shape=rect;whiteSpace=wrap;html=1;fillColor=#333333;strokeColor=none;" '
+        f'style="shape=rect;whiteSpace=wrap;html=1;fillColor={STROKE};strokeColor=none;" '
         f'vertex="1" parent="1">\n'
         f'      <mxGeometry x="{x:.1f}" y="{y:.1f}" width="2" height="{height:.1f}" as="geometry" />\n'
         f'    </mxCell>'
     )
 
 
-def generate_drawio(root: Couple, title: str) -> str:
+def generate_drawio(root: Couple, title: str, font_family: str) -> str:
     couples = collect_couples(root)
 
     # Auto-fit: shift so top-left is at MARGIN (below title space)
-    title_height = 25.0
     min_x = min(c.x + c.left for c in couples)
     max_x = max(c.x + c.right for c in couples)
     min_y = min(c.y for c in couples)
     max_y = max(c.y + TEXT_H for c in couples)
 
     dx = MARGIN - min_x
-    dy = MARGIN + title_height - min_y
+    dy = MARGIN + TITLE_HEIGHT - min_y
 
     for c in couples:
         c.x += dx
         c.y += dy
 
     page_width = max(max_x - min_x + 2 * MARGIN, 100)
-    page_height = max(max_y - min_y + 2 * MARGIN + title_height, 100)
+    page_height = max(max_y - min_y + 2 * MARGIN + TITLE_HEIGHT, 100)
 
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -330,7 +292,7 @@ def generate_drawio(root: Couple, title: str) -> str:
     # Title
     parts.append(
         f'    <mxCell id="title" value="{html.escape(title)}" '
-        f'style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontFamily={FONT_FAMILY};fontStyle=1" '
+        f'style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontFamily={html.escape(font_family)};fontStyle=1" '
         f'vertex="1" parent="1">\n'
         f'      <mxGeometry x="{MARGIN:.1f}" y="5" width="{page_width - 2 * MARGIN:.1f}" height="20" as="geometry" />\n'
         f'    </mxCell>'
@@ -345,13 +307,13 @@ def generate_drawio(root: Couple, title: str) -> str:
         if c.husband_id:
             cell_idx += 1
             parts.append(
-                text_cell(f"h{safe_id(c.husband_id)}_{c.instance}", c.x + c.husband_x, c.y, get_name(c.husband_id, individuals))
+                text_cell(f"h{safe_id(c.husband_id)}_{c.instance}", c.x + c.husband_x, c.y, get_name(c.husband_id, individuals), font_family)
             )
         # Wife label
         if c.wife_id:
             cell_idx += 1
             parts.append(
-                text_cell(f"w{safe_id(c.wife_id)}_{c.instance}", c.x + c.wife_x, c.y, get_name(c.wife_id, individuals))
+                text_cell(f"w{safe_id(c.wife_id)}_{c.instance}", c.x + c.wife_x, c.y, get_name(c.wife_id, individuals), font_family)
             )
 
         # Double marriage line near bottom of text box
@@ -366,7 +328,16 @@ def generate_drawio(root: Couple, title: str) -> str:
                 cell_idx += 1
                 parts.append(hline(f"m{cell_idx}b", left, my + MARRIAGE_LINE_GAP, width))
 
-    # Draw vertical descenders from each parent couple's marriage line down to child
+    # Draw vertical descenders from each parent couple's marriage line down to child.
+    # The marriage line is drawn as a 2 px-thick double line (top at y +
+    # MARRIAGE_Y_OFFSET, bottom at y + MARRIAGE_Y_OFFSET + MARRIAGE_LINE_GAP).
+    # The descender starts ``LINE_THICKNESS + DESCENDER_CLEARANCE`` below the
+    # lower marriage line and ends ``CHILD_CLEARANCE`` above the child's text
+    # box.  These constants are the ancestor-script-specific equivalent of the
+    # shared ``DESCENDER_OFFSET``/``CHILD_DROP`` constants.
+    LINE_THICKNESS = 2.0
+    DESCENDER_CLEARANCE = 1.0
+    CHILD_CLEARANCE = 1.0
     for c in couples:
         if not (c.father or c.mother):
             continue
@@ -377,10 +348,10 @@ def generate_drawio(root: Couple, title: str) -> str:
             if parent is None:
                 continue
             parent_marriage_x = parent.x + parent.center
-            # Start just below the lower marriage line (the line itself is 2 px thick)
-            top = parent.y + MARRIAGE_Y_OFFSET + MARRIAGE_LINE_GAP + 2.0 + 1.0
+            # Top of the descender: just below the lower marriage line.
+            top = parent.y + MARRIAGE_Y_OFFSET + MARRIAGE_LINE_GAP + LINE_THICKNESS + DESCENDER_CLEARANCE
             # End just above the child's text box
-            bottom = child_top - 1.0
+            bottom = child_top - CHILD_CLEARANCE
             height = bottom - top
             if height > 0:
                 vkey = (round(parent_marriage_x, 1), round(top, 1), round(height, 1))
@@ -406,17 +377,15 @@ def main() -> None:
     parser.add_argument("--generations", type=int, default=5, help="Number of ancestor generations")
     parser.add_argument("--output", required=True, help="Output drawio file")
     parser.add_argument("--title", help="Chart title")
-    parser.add_argument("--font-family", default="Helvetica", help="Font family for labels and title (default Helvetica).")
+    parser.add_argument("--font-family", default=FONT_FAMILY_DEFAULT, help="Font family for labels and title (default Helvetica).")
     args = parser.parse_args()
-
-    global FONT_FAMILY
-    FONT_FAMILY = args.font_family
 
     global individuals, families
     individuals, families = parse_gedcom(args.gedcom)
 
     focus_id = args.root_id
-    spouse_id = get_spouse(focus_id, individuals, families)
+    spouses = get_spouses(focus_id, individuals, families)
+    spouse_id = spouses[0] if spouses else None
 
     root = build_tree(focus_id, spouse_id, args.generations, individuals, families, recurse_spouse=False)
     if root is None:
@@ -429,7 +398,7 @@ def main() -> None:
     place_tree(root, PAGE_CENTER_X - root.center + root.left, 300.0)
 
     title = args.title or f"Ancestors of {get_name(focus_id, individuals)}"
-    xml = generate_drawio(root, title)
+    xml = generate_drawio(root, title, args.font_family)
 
     Path(args.output).write_text(xml, encoding="utf-8")
     print(f"Root: {get_name(focus_id, individuals)} ({focus_id})")

@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Generate a no-box, visitation-style family tree in draw.io XML from a GEDCOM file.
+Generate a no-box, descendant-only family tree in draw.io XML from a GEDCOM file.
 
-Layout strategy (hourglass, root in the middle generation):
-- Collect `generations` levels of ancestors above the root and the same below.
+Layout strategy:
+- Start from the root person and render descendants for `generations` levels.
 - Render each person as a plain centred text label (no boxes).
 - Draw orthogonal connectors: horizontal marriage line -> vertical descender ->
   horizontal child connector -> vertical lines to each child.
 - Stop child-drop lines at the top edge of each name label.
 
+Use --ancestors-only to switch to ancestor-only mode.
+
 Usage:
-    python3 generate_visitation_tree.py --gedcom path/to/tree.ged \
+    python3 generate_descendants_with_steps.py --gedcom path/to/tree.ged \
         --root "Brian Stanley Short" --generations 2 --output tree.drawio
 """
 
@@ -21,138 +23,36 @@ import re
 import sys
 from dataclasses import dataclass, field
 
-
-# ---------------------------------------------------------------------------
-# Minimal GEDCOM parser
-# ---------------------------------------------------------------------------
-
-
-def parse_gedcom(path: str):
-    individuals: dict[str, dict] = {}
-    families: dict[str, dict] = {}
-
-    current_indi: str | None = None
-    current_fam: str | None = None
-    current_event: str | None = None
-
-    with open(path, "r", encoding="utf-8") as f:
-        for raw in f:
-            line = raw.rstrip("\n")
-            if not line:
-                continue
-            parts = line.split(" ", 2)
-            if len(parts) < 2:
-                continue
-            level = int(parts[0])
-            rest = parts[1]
-            value = parts[2] if len(parts) > 2 else ""
-
-            if level == 0:
-                current_event = None
-                if value == "INDI":
-                    current_indi = rest
-                    current_fam = None
-                    individuals[current_indi] = {
-                        "name": "",
-                        "givn": "",
-                        "surn": "",
-                        "sex": "",
-                        "birth": "",
-                        "death": "",
-                        "famc": "",
-                        "fams": [],
-                    }
-                elif value == "FAM":
-                    current_fam = rest
-                    current_indi = None
-                    families[current_fam] = {"husb": "", "wife": "", "chil": []}
-                else:
-                    current_indi = None
-                    current_fam = None
-            elif level == 1:
-                current_event = rest
-                if current_indi:
-                    if rest == "NAME":
-                        # Keep the first NAME record; later ones are alternate names.
-                        if not individuals[current_indi]["name"]:
-                            individuals[current_indi]["name"] = value
-                    elif rest == "SEX":
-                        individuals[current_indi]["sex"] = value
-                    elif rest == "FAMC":
-                        individuals[current_indi]["famc"] = value
-                    elif rest == "FAMS":
-                        individuals[current_indi]["fams"].append(value)
-                elif current_fam:
-                    if rest == "HUSB":
-                        families[current_fam]["husb"] = value
-                    elif rest == "WIFE":
-                        families[current_fam]["wife"] = value
-                    elif rest == "CHIL":
-                        families[current_fam]["chil"].append(value)
-            elif level == 2 and current_indi:
-                if rest == "GIVN":
-                    individuals[current_indi]["givn"] = value
-                elif rest == "SURN":
-                    individuals[current_indi]["surn"] = value
-                elif rest == "DATE":
-                    if current_event == "BIRT":
-                        individuals[current_indi]["birth"] = value
-                    elif current_event == "DEAT":
-                        individuals[current_indi]["death"] = value
-
-    return individuals, families
-
-
-def get_name(indi_id: str, individuals: dict) -> str:
-    d = individuals.get(indi_id, {})
-    name = d.get("name", "").replace("/", "").strip()
-    if not name:
-        name = f"{d.get('givn', '').strip()} {d.get('surn', '').strip()}".strip()
-    return name or indi_id
-
-
-def get_birth(indi_id: str, individuals: dict) -> str:
-    return individuals.get(indi_id, {}).get("birth", "")
-
-def estimate_label_height(name: str, birth: str, width: float = 75.0) -> float:
-    """Estimate the height of a label in px based on text wrapping."""
-    chars_per_line = 14 
-    name_lines = (len(name) + chars_per_line - 1) // chars_per_line
-    total_lines = max(1, name_lines) + 1
-    return total_lines * 15.0
-
-
-def get_parents(indi_id: str, individuals: dict, families: dict):
-    famc = individuals.get(indi_id, {}).get("famc", "")
-    if not famc:
-        return None, None
-    fam = families.get(famc, {})
-    return fam.get("husb"), fam.get("wife")
-
-
-def get_children(indi_id: str, individuals: dict, families: dict):
-    children = []
-    for fams_id in individuals.get(indi_id, {}).get("fams", []):
-        children.extend(families.get(fams_id, {}).get("chil", []))
-    return children
-
-
-def get_spouses(indi_id: str, individuals: dict, families: dict):
-    spouses = []
-    for fams_id in individuals.get(indi_id, {}).get("fams", []):
-        fam = families.get(fams_id, {})
-        if fam.get("husb") == indi_id:
-            spouses.append(fam.get("wife"))
-        elif fam.get("wife") == indi_id:
-            spouses.append(fam.get("husb"))
-    return [s for s in spouses if s]
-
-
-def find_individual_by_name(individuals: dict, given: str, surname: str) -> str | None:
-    for indi_id, data in individuals.items():
-        if data.get("surn") == surname and given in data.get("givn", ""):
-            return indi_id
-    return None
+from drawio_layout import (
+    CHILD_DROP,
+    DEFAULT_GENERATION_HEIGHT,
+    DEFAULT_TEXT_H,
+    DEFAULT_TEXT_H_SMALL,
+    MARRIAGE_GAP,
+    MARRIAGE_LINE_GAP,
+    MARRIAGE_Y_OFFSET,
+    SIBLING_GAP as MIN_SIBLING_GAP,
+    STROKE as STROKE_COLOR,
+    TEXT_W,
+    compute_max_label_height,
+    connector_y_from_child,
+    couple_descender_top,
+    estimate_label_height,
+    marriage_pair_center,
+    marriage_pair_people,
+    min_generation_height,
+    resolve_connector_y,
+    single_descender_top,
+)
+from parse_gedcom import (
+    find_individual_by_name,
+    get_birth,
+    get_children,
+    get_name,
+    get_parents,
+    get_spouses,
+    parse_gedcom,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +111,6 @@ class FamilyUnit:
 
 TEXT_W = 75.0
 DEFAULT_TEXT_H = 30.0
-DEFAULT_TEXT_H_SMALL = 28.0
 DEFAULT_GENERATION_HEIGHT = 105.0
 MARRIAGE_GAP = 14.0
 MIN_SIBLING_GAP = 12.0
@@ -617,31 +516,30 @@ def _apply_unit_x(unit: FamilyUnit) -> None:
     - 0 spouses: blood person centred.
     - 1 spouse: [Blood, Spouse].
     - N>=2 spouses: [Spouse1, Blood, Spouse2, ..., SpouseN].
+
+    Note: for descendants with exactly 2 spouses, ``place_unit_at_blood_center``
+    uses [S1, Blood, S2] (first spouse on the LEFT) to keep the chart compact.
+    This function matches that convention.
     """
     num_spouses = len(unit.people) - 1
     if num_spouses <= 0:
         unit.people[0].x = unit.center - TEXT_W / 2
         return
 
-    width = _unit_width(num_spouses)
-    left = unit.center - width / 2
     step = TEXT_W + MARRIAGE_GAP
     if num_spouses == 1:
-        unit.people[0].x = left                   # Blood
-        unit.people[1].x = left + step            # Spouse
-    elif unit.people[0].is_descendant:
-        # Descendant layout: [Blood, S1, S2, S3, ...] - all spouses to the right
-        unit.people[0].x = left                   # Blood
-        for i in range(1, len(unit.people)):
-            unit.people[i].x = left + i * step    # S1, S2, S3, ...
-    else:
-        # [S1, Blood, S2, S3, ...]
-        s1_x = left
-        blood_x = left + step
-        unit.people[0].x = blood_x                # Blood
-        unit.people[1].x = s1_x                   # S1
-        for i in range(2, len(unit.people)):
-            unit.people[i].x = blood_x + (i - 1) * step  # S2, S3, ...
+        unit.people[0].x = unit.center - TEXT_W / 2                   # Blood
+        unit.people[1].x = unit.center - TEXT_W / 2 + step            # Spouse
+        _recompute_unit_geometry(unit)
+        return
+
+    # [S1, Blood, S2, ..., SN]
+    width = (num_spouses + 1) * TEXT_W + num_spouses * MARRIAGE_GAP
+    left = unit.center - width / 2
+    unit.people[0].x = left + step                                    # Blood
+    unit.people[1].x = left                                            # S1
+    for i in range(2, len(unit.people)):
+        unit.people[i].x = left + step + (i - 1) * step                # S2, S3, ...
     _recompute_unit_geometry(unit)
 
 
@@ -799,10 +697,11 @@ def layout_subtree(unit: FamilyUnit) -> Extent:
             c.y = unit.y + CURRENT_GEN_H
         child_extents = [layout_subtree(c) for c in children]
         _combine_extents(child_extents, MIN_SIBLING_GAP)
+        group_blood_centers = [blood_center(c) for c in children]
+        group_blood_center = (min(group_blood_centers) + max(group_blood_centers)) / 2
         group_left = min(e.left for e in child_extents)
         group_right = max(e.right for e in child_extents)
-        group_center = (group_left + group_right) / 2
-        group_extents.append((spouse_idx, Extent(group_left, group_right, group_center, children=child_extents)))
+        group_extents.append((spouse_idx, Extent(group_left, group_right, group_blood_center, children=child_extents)))
 
     # Compute blood centre that best aligns marriage midpoints with group centres
     num_spouses = len(unit.people) - 1
@@ -811,36 +710,32 @@ def layout_subtree(unit: FamilyUnit) -> Extent:
     # - >2 spouses: [Blood, S1, S2, S3, ...] all to the right
     all_spouses_right = len(unit.people) > 3
     step = TEXT_W + MARRIAGE_GAP
+
+    def _group_offset(spouse_idx: int) -> float:
+        """Offset from blood centre to the marriage midpoint for this child group."""
+        if spouse_idx == 0:
+            # Single parent: the child's centre should align with the blood person's centre.
+            return 0.0
+        if all_spouses_right:
+            # [Blood, S1, S2, S3, ...]
+            return (2 * spouse_idx - 1) * step / 2
+        # Exactly 2 spouses: [S1(left), Blood, S2(right)]
+        if spouse_idx == 1:
+            return -step / 2
+        return (2 * spouse_idx - 3) * step / 2
+
     if group_extents:
-        desired_blood_centres = []
+        desired_blood_centres: list[float] = []
         for spouse_idx, ge in group_extents:
-            if all_spouses_right:
-                # [Blood, S1, S2, S3, ...]
-                # midpoint for spouse_idx=1 (Blood-S1) is at step/2
-                # midpoint for spouse_idx>=2 (S1-S_idx) is at (2*spouse_idx - 1)*step/2
-                offset = (2 * spouse_idx - 1) * step / 2
-            else:
-                # [S1, Blood, S2, S3, ...]
-                if spouse_idx == 1:
-                    offset = -step / 2
-                else:
-                    offset = (2 * spouse_idx - 3) * step / 2
-            desired_blood_centres.append(ge.center - offset)
-        blood_center = sum(desired_blood_centres) / len(desired_blood_centres)
+            desired_blood_centres.append(ge.center - _group_offset(spouse_idx))
+        unit_blood_center = sum(desired_blood_centres) / len(desired_blood_centres)
     else:
-        blood_center = 0.0
+        unit_blood_center = 0.0
 
     # Shift each group so its centre sits on its marriage midpoint
     extents_only = []
     for spouse_idx, ge in group_extents:
-        if all_spouses_right:
-            offset = (2 * spouse_idx - 1) * step / 2
-        else:
-            if spouse_idx == 1:
-                offset = -step / 2
-            else:
-                offset = (2 * spouse_idx - 3) * step / 2
-        target = blood_center + offset
+        target = unit_blood_center + _group_offset(spouse_idx)
         ge.shift(target - ge.center)
         extents_only.append(ge)
 
@@ -864,8 +759,8 @@ def layout_subtree(unit: FamilyUnit) -> Extent:
     else:
         children_left = children_right = 0.0
 
-    # Place the unit with the blood person at blood_center
-    place_unit_at_blood_center(unit, blood_center, unit.y, all_spouses_right=all_spouses_right)
+    # Place the unit with the blood person at unit_blood_center
+    place_unit_at_blood_center(unit, unit_blood_center, unit.y, all_spouses_right=all_spouses_right)
 
     unit_left = min(p.x for p in unit.people)
     unit_right = max(p.x + TEXT_W for p in unit.people)
@@ -886,7 +781,8 @@ def layout_subtree(unit: FamilyUnit) -> Extent:
 
     left = min(unit_left, children_left)
     right = max(unit_right, children_right)
-    return Extent(left, right, (left + right) / 2, unit=unit, children=extents_only)
+    extent_center = blood_center(unit) if unit else (left + right) / 2
+    return Extent(left, right, extent_center, unit=unit, children=extents_only)
 
 
 def _marriage_people(unit: FamilyUnit, spouse_idx: int) -> tuple[Person, Person]:
@@ -973,8 +869,10 @@ def build_tree(
     global MAX_LABEL_H, CURRENT_GEN_H, MAX_LABEL_H_SMALL
     MAX_LABEL_H = global_max
     MAX_LABEL_H_SMALL = global_max - 2.0  # Keep the small offset
-    # Scale generation height: 105 was for 30. Increase by the difference.
-    CURRENT_GEN_H = DEFAULT_GENERATION_HEIGHT + (MAX_LABEL_H - DEFAULT_TEXT_H)
+    # Use the shared minimum generation height.  This keeps the parent
+    # descender length tight at DESCENDER_OFFSET without the child-driven
+    # bar cap taking over.
+    CURRENT_GEN_H = min_generation_height(MAX_LABEL_H)
     # ---------------------------------
 
     # Layout root generation (root couple + siblings)
@@ -1371,11 +1269,10 @@ def _draw_ancestor_connectors(
     drawn_h: set[tuple[float, float, float]] = set()
     drawn_v: set[tuple[float, float, float]] = set()
 
-    CHILD_DROP = 12.0
     JOIN_BAR_HALF = 15.0
 
     for child_obj, parents in child_to_parents.values():
-        connector_y = child_obj.y - CHILD_DROP
+        connector_y = connector_y_from_child(child_obj.y)
 
         marriage_centers = []
         for parent in parents:
@@ -1431,13 +1328,11 @@ def _draw_mixed_ancestor_connectors(
     drawn_h: set[tuple[float, float, float]] = set()
     drawn_v: set[tuple[float, float, float]] = set()
 
-    CHILD_DROP = 12.0
-
     for parent in units:
         for group in parent.spouse_children:
             for child in group:
                 child_center = parent.child_centers.get(id(child), blood_center(child))
-                connector_y = child.y - CHILD_DROP
+                connector_y = connector_y_from_child(child.y)
 
                 if len(parent.people) >= 2:
                     mx = (parent.people[0].x + TEXT_W + parent.people[1].x) / 2
@@ -1613,37 +1508,16 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
             # Sort groups left-to-right so their child connectors step down naturally.
             group_infos.sort(key=lambda g: g["center"])
 
-            marriage_line_bottom = unit.y + MARRIAGE_Y_OFFSET + MARRIAGE_LINE_GAP + 1.0
-
             for gi in group_infos:
                 spouse_idx = gi["spouse_idx"]
                 # Marriage midpoint: the two people that form the marriage.
                 if spouse_idx == 0 or spouse_idx >= len(unit.people):
                     left_person = unit.people[0]
                     right_person = unit.people[0]
-                    descender_top = unit.y + MAX_LABEL_H
-                elif len(unit.people) == 2:
-                    left_person = unit.people[0]
-                    right_person = unit.people[1]
-                    descender_top = marriage_line_bottom
-                elif getattr(unit.people[spouse_idx], 'is_step_parent', False):
-                    # Step-parent group: children belong to the marriage between the blood person's
-                    # spouse (people[1]) and this step-parent.
-                    left_person = unit.people[1]
-                    right_person = unit.people[spouse_idx]
-                    descender_top = marriage_line_bottom
-                elif spouse_idx == 1:
-                    left_person = unit.people[1]   # S1
-                    right_person = unit.people[0]  # Blood
-                    descender_top = marriage_line_bottom
-                elif spouse_idx == 2:
-                    left_person = unit.people[0]   # Blood
-                    right_person = unit.people[2]  # S2
-                    descender_top = marriage_line_bottom
+                    descender_top = single_descender_top(unit.y, MAX_LABEL_H)
                 else:
-                    left_person = unit.people[spouse_idx - 1]
-                    right_person = unit.people[spouse_idx]
-                    descender_top = marriage_line_bottom
+                    left_person, right_person = marriage_pair_people(unit.people, spouse_idx)
+                    descender_top = couple_descender_top(unit.y)
                 gi["marriage_x"] = (left_person.x + TEXT_W + right_person.x) / 2
                 gi["descender_top"] = descender_top
                 gi["is_single"] = (spouse_idx == 0 or spouse_idx >= len(unit.people))
@@ -1653,34 +1527,27 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
             # descenders from crossing each other or other connectors.
             # Keep the connectors below the parent text boxes so they do not overlap labels.
             # Single-parent descenders are deliberately shorter than couple descenders.
-            desired_lengths = [
-                45.0 if gi["is_single"] else 63.0 for gi in group_infos
-            ]
-            base_connector_y = max(
-                gi["descender_top"] + length
-                for gi, length in zip(group_infos, desired_lengths)
-            )
             child_y = group_infos[0]["group"][0].y
-            # Keep the drop from the sibling bar down to each child name short.
-            # If the bar is so high that this drop would be long, lower the bar.
-            MAX_CHILD_NAME_DROP = 22.0
-            base_connector_y = max(
-                base_connector_y,
-                child_y - MAX_CHILD_NAME_DROP - 4.0,
-                unit.y + MAX_LABEL_H + 8.0,
-            )
-            max_connector_y = base_connector_y + (len(group_infos) - 1) * CHILD_CONNECTOR_STAGGER
-            if max_connector_y >= child_y - 12.0 and len(group_infos) > 1:
-                available = max(0.0, child_y - 12.0 - base_connector_y)
-                stagger = available / (len(group_infos) - 1)
-            else:
-                stagger = CHILD_CONNECTOR_STAGGER
-
             n_groups = len(group_infos)
+
+            # Rightmost group sits at CHILD_DROP above the children. Each group to the
+            # left steps down by CHILD_CONNECTOR_STAGGER. The shared
+            # resolve_connector_y rule is then applied per-group to keep the child-name
+            # drop at CHILD_DROP while preserving the stagger.
+            base_connector_y = connector_y_from_child(child_y)
+            stagger = CHILD_CONNECTOR_STAGGER
+
             for stagger_idx, gi in enumerate(group_infos):
                 h_idx += 1
                 # group_infos is sorted left-to-right; rightmost gets the highest (smallest y)
-                connector_y = base_connector_y + (n_groups - 1 - stagger_idx) * stagger
+                candidate_y = base_connector_y + (n_groups - 1 - stagger_idx) * stagger
+                # Apply the shared rule: lower of parent-driven target and child-driven cap.
+                resolved_y = resolve_connector_y(
+                    descender_top=gi["descender_top"],
+                    max_label_h=MAX_LABEL_H,
+                    child_y=child_y,
+                )
+                connector_y = max(candidate_y, resolved_y)
                 marriage_x = gi["marriage_x"]
                 descender_top = gi["descender_top"]
                 left_center = gi["left_center"]
@@ -1700,7 +1567,6 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
                     # Stop the child drop just below the horizontal connector so it reads as one
                     # continuous line, but keep it clear of the child's text.
                     parts.append(vline(f"c{c_idx}", blood_center(child), connector_y + 1.0, child.y - connector_y - 4.0))
-
     # Person labels (drawn on top of all connector lines)
     id_counter: dict[str, int] = {}
     for gen in sorted(units_by_gen.keys()):
@@ -1755,13 +1621,12 @@ def generate_drawio(units: list[FamilyUnit], title: str, ancestor_mode: bool = F
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate a visitation-style family tree from GEDCOM.")
+    parser = argparse.ArgumentParser(description="Generate a descendant-only family tree from GEDCOM.")
     parser.add_argument("--gedcom", required=True, help="Path to the GEDCOM file.")
     parser.add_argument("--root", default=None, help='Focus person, e.g. "Brian Stanley Short" (given surname).')
     parser.add_argument("--root-id", default=None, help='Focus person ID, e.g. "@I123@" (overrides --root).')
-    parser.add_argument("--generations", type=int, default=2, help="Number of generations up and down from root (default 2).")
+    parser.add_argument("--generations", type=int, default=2, help="Number of descendant generations below the root (default 2).")
     parser.add_argument("--all-descendants", action="store_true", help="Use the maximum descendant depth as --generations.")
-    parser.add_argument("--descendants-only", action="store_true", help="Skip ancestors; show only root and descendants.")
     parser.add_argument("--ancestors-only", action="store_true", help="Skip descendants; show only root and ancestors.")
     parser.add_argument("--output", default="family_tree.drawio", help="Output draw.io file path.")
     parser.add_argument("--title", default=None, help="Diagram title (default derived from root name).")
@@ -1823,7 +1688,7 @@ def main() -> int:
         families,
         page_center_x=args.center_x,
         root_y=args.root_y,
-        include_ancestors=not args.descendants_only,
+        include_ancestors=False,
         include_descendants=not args.ancestors_only,
         include_step_children=args.include_step_children,
     )

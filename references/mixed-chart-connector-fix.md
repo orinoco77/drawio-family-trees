@@ -76,7 +76,7 @@ Test all three modes after any change to the connector code:
 ```bash
 python3 scripts/generate_visitation_tree.py --gedcom tree.ged --root-id "@I..." --generations 2 --output mixed.drawio
 python3 scripts/generate_visitation_tree.py --gedcom tree.ged --root-id "@I..." --generations 5 --ancestors-only --output ancestors.drawio
-python3 scripts/generate_visitation_tree.py --gedcom tree.ged --root-id "@I..." --generations 2 --descendants-only --output descendants.drawio
+python3 scripts/generate_visitation_tree.py --gedcom tree.ged --root-id "@I..." --generations 2 --output descendants.drawio
 
 python3 scripts/validate.py mixed.drawio
 python3 scripts/validate.py ancestors.drawio

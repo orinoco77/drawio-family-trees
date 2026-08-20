@@ -14,12 +14,21 @@ This is a proper git repo with remote origin. Use standard git workflow:
 
 ## Output Locations
 
-**Always output to the home folder (`/home/tv/`):**
+**Always output to the family-tree folder:**
 ```bash
---output /home/tv/family_tree.drawio
+--output "/home/tv/family tree charts/<descriptive_name>.drawio"
 ```
 
-**Never** put output in the clawd folder or other project directories unless explicitly requested.
+The folder name contains a space; quote the path in shell commands. If the
+folder does not exist, create it first:
+
+```bash
+mkdir -p "/home/tv/family tree charts"
+```
+
+**Do not** scatter `.drawio`, `.png`, or `.svg` files directly in `/home/tv` or
+in unrelated project directories unless explicitly requested. Keep all generated
+family-tree artifacts in this single folder.
 
 ## Testing Changes
 
@@ -29,16 +38,15 @@ When modifying the step-children generator or other scripts:
 2. Test with the cached GEDCOM:
    ```bash
    python3 ~/.hermes/skills/drawio-family-trees/scripts/generate_descendants_with_steps.py \
-       --gedcom "/home/tv/.hermes/cache/documents/doc_e98a9d0410ca_Short Main Family Tree (1).ged" \
+       --gedcom "/home/tv/Short Main Family Tree.ged" \
        --root "Adam Jonathan Short" \
        --generations 3 \
-       --descendants-only \
        --include-step-children \
-       --output /home/tv/test_step_children.drawio
+       --output "/home/tv/family tree charts/test_step_children.drawio"
    ```
 3. Render and verify visually:
    ```bash
-   python3 ~/.hermes/skills/drawio-family-trees/scripts/flatten_export.py /home/tv/test_step_children.drawio
+   python3 ~/.hermes/skills/drawio-family-trees/scripts/flatten_export.py "/home/tv/family tree charts/test_step_children.drawio"
    ```
 
 ## Git Status
@@ -49,11 +57,6 @@ cd ~/.hermes/skills/drawio-family-trees
 git status
 ```
 
-Currently there are uncommitted changes:
-- `SKILL.md` modified
-- `references/step-children-gedcom.md` (new)
-- `references/dynamic-descender-height.md` (new)
-- `references/duplicate-person-markers.md` (new)
-- `scripts/generate_descendants_with_steps.py` (new)
-
-These should be committed when the step-children feature is finalized.
+Commit completed work when the user is happy with it. If the working tree
+already contains unrelated uncommitted changes from earlier work, ask the user
+before mixing them into a new commit.

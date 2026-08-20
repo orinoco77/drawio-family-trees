@@ -59,7 +59,11 @@ def parse_gedcom(path: str):
                 current_event = rest
                 if current_indi:
                     if rest == "NAME":
-                        individuals[current_indi]["name"] = value
+                        # Keep the first NAME record; later ones are alternate
+                        # names (GEDCOM allows multiple, but the primary name
+                        # is the canonical display value).
+                        if not individuals[current_indi]["name"]:
+                            individuals[current_indi]["name"] = value
                     elif rest == "SEX":
                         individuals[current_indi]["sex"] = value
                     elif rest == "FAMC":
@@ -89,9 +93,9 @@ def parse_gedcom(path: str):
 
 def get_name(indi_id: str, individuals: dict) -> str:
     d = individuals.get(indi_id, {})
-    name = d.get("name", "").replace("/", "")
+    name = d.get("name", "").replace("/", "").strip()
     if not name:
-        name = f"{d.get('givn', '')} {d.get('surn', '')}".strip()
+        name = f"{d.get('givn', '').strip()} {d.get('surn', '').strip()}".strip()
     return name or indi_id
 
 
@@ -129,6 +133,20 @@ def find_individual_by_name(individuals: dict, given: str, surname: str) -> str 
     """Return the first individual whose given name contains `given` and surname matches."""
     for indi_id, data in individuals.items():
         if surname == data.get("surn", "") and given in data.get("givn", ""):
+            return indi_id
+    return None
+
+
+def find_individual_substring(individuals: dict, pattern: str) -> str | None:
+    """Return the first individual whose cleaned name contains `pattern` (case-insensitive).
+
+    Use this when the caller has a partial/full name string and doesn't want
+    to split it into given/surname.  Matches anywhere in the rendered name.
+    """
+    pattern_lower = pattern.lower()
+    for indi_id in individuals:
+        name = get_name(indi_id, individuals).lower()
+        if pattern_lower in name:
             return indi_id
     return None
 

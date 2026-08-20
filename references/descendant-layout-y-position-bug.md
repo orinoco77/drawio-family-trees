@@ -6,7 +6,7 @@ A descendant-only chart renders as a single horizontal line: all descendants app
 
 ## Root cause
 
-`generate_visitation_tree.py` uses a recursive bottom-up layout (`layout_subtree`) for `--descendants-only` charts. The function computed x-positions recursively but never assigned y-positions to child units. Children therefore retained their default `y=0`, so after the final bounding-box shift every descendant ended up on the same horizontal line.
+`generate_visitation_tree.py` uses a recursive bottom-up layout (`layout_subtree`) for descendants-only charts. The function computed x-positions recursively but never assigned y-positions to child units. Children therefore retained their default `y=0`, so after the final bounding-box shift every descendant ended up on the same horizontal line.
 
 ## Fix
 
@@ -91,7 +91,7 @@ Any non-zero count after the y-position fix indicates remaining geometry problem
 
 ## Follow-on issue: root has siblings
 
-If the focus person has siblings in the GEDCOM, `build_tree` may collect `sibling_units` even when `--descendants-only` is set. That switches the chart into the mixed/hourglass top-down layout path, which does **not** use the recursive bottom-up `layout_subtree`. The result is a chart that has vertical generational separation but conjoins adjacent families in the middle: horizontal child connectors from different parent units overlap, child-drop lines cross into unrelated families, and the middle generations become unreadable.
+If the focus person has siblings in the GEDCOM, `build_tree` may collect `sibling_units` even in descendants-only mode. That switches the chart into the mixed/hourglass top-down layout path, which does **not** use the recursive bottom-up `layout_subtree`. The result is a chart that has vertical generational separation but conjoins adjacent families in the middle: horizontal child connectors from different parent units overlap, child-drop lines cross into unrelated families, and the middle generations become unreadable.
 
 ### Symptom
 
@@ -116,7 +116,7 @@ if include_descendants and include_ancestors:
     ]
 ```
 
-After this change, `--descendants-only` charts always use the recursive bottom-up layout, producing the expected wide, separated subtrees and `0 error(s), 0 warning(s)`.
+After this change, descendants-only charts always use the recursive bottom-up layout, producing the expected wide, separated subtrees and `0 error(s), 0 warning(s)`.
 
 ### Verification
 

@@ -49,7 +49,7 @@ After the shift, run the same three-mode test as for connector fixes:
 ```bash
 python3 scripts/generate_visitation_tree.py --gedcom tree.ged --root-id "@I..." --generations 2 --output mixed.drawio
 python3 scripts/generate_visitation_tree.py --gedcom tree.ged --root-id "@I..." --generations 5 --ancestors-only --output ancestors.drawio
-python3 scripts/generate_visitation_tree.py --gedcom tree.ged --root-id "@I..." --generations 2 --descendants-only --output descendants.drawio
+python3 scripts/generate_visitation_tree.py --gedcom tree.ged --root-id "@I..." --generations 2 --output descendants.drawio
 
 python3 scripts/validate.py mixed.drawio
 python3 scripts/validate.py ancestors.drawio

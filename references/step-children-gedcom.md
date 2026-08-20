@@ -28,7 +28,6 @@ python3 ~/.hermes/skills/drawio-family-trees/scripts/generate_descendants_with_s
     --gedcom family.ged \
     --root-id "@I123@" \
     --generations 5 \
-    --descendants-only \
     --include-step-children \
     --output family_with_steps.drawio
 ```

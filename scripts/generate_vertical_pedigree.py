@@ -3,7 +3,16 @@
 
 Shows only the ancestors on the path from a focus person up to a target
 ancestor, plus each ancestor's spouse.  No siblings, aunts, uncles, or cousins.
+
+This script shares its GEDCOM/lookup helpers (``parse_gedcom``, ``get_name``,
+``get_parents``, ``find_individual_by_name``) and its cell-rendering helpers
+(``text_cell``, ``hline``, ``vrect``, ``label_value``) with the other
+generation scripts in this skill.  Layout tweaks made in ``drawio_layout.py``
+(``DESCENDER_OFFSET``, ``CHILD_DROP``, ``INTER_GEN_GAP``, ``STROKE``,
+``MARRIAGE_Y_OFFSET``, etc.) propagate here automatically.
 """
+
+from __future__ import annotations
 
 import argparse
 import re
@@ -11,123 +20,44 @@ import sys
 from collections import deque
 from pathlib import Path
 
+from drawio_layout import (
+    FONT_COLOR,
+    FONT_SIZE,
+    MARRIAGE_GAP,
+    MARRIAGE_LINE_GAP,
+    MARRIAGE_Y_OFFSET,
+    STROKE,
+    TITLE_Y,
+    couple_descender_top,
+    hline,
+    label_value,
+    min_generation_height,
+    text_cell,
+    vrect,
+)
+from parse_gedcom import (
+    find_individual_substring,
+    get_name,
+    get_parents,
+    parse_gedcom,
+)
+
+
+# Pedigree-script-specific layout constants -----------------------------------
+# The vertical pedigree has slightly wider labels than the shared default to
+# accommodate "Name (b. Year)" on two lines, and a tighter page margin than
+# the shared default.  All marriage-line and font constants come from the
+# shared ``drawio_layout`` module so a tweak there flows through.
 TEXT_W = 110.0
 TEXT_H = 38.0
-MARRIAGE_GAP = 20.0
-GENERATION_HEIGHT = 80.0
-MARRIAGE_Y_OFFSET = 12.0
-MARRIAGE_LINE_GAP = 4.0
-STROKE_COLOR = "#333333"
 MARGIN = 20.0
-FONT_FAMILY = "Helvetica"  # default font; override with --font-family
 
-
-def parse_gedcom(path: str):
-    individuals: dict[str, dict] = {}
-    families: dict[str, dict] = {}
-
-    current_indi: str | None = None
-    current_fam: str | None = None
-    current_event: str | None = None
-
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
-            line = raw.rstrip("\n")
-            if not line:
-                continue
-            parts = line.split(" ", 2)
-            if len(parts) < 2:
-                continue
-            level = int(parts[0])
-            rest = parts[1]
-            value = parts[2] if len(parts) > 2 else ""
-
-            if level == 0:
-                current_event = None
-                if value == "INDI":
-                    current_indi = rest
-                    current_fam = None
-                    individuals[current_indi] = {
-                        "name": "",
-                        "givn": "",
-                        "surn": "",
-                        "sex": "",
-                        "birth": "",
-                        "death": "",
-                        "famc": "",
-                        "fams": [],
-                    }
-                elif value == "FAM":
-                    current_fam = rest
-                    current_indi = None
-                    families[current_fam] = {"husb": "", "wife": "", "chil": []}
-                else:
-                    current_indi = None
-                    current_fam = None
-            elif level == 1:
-                current_event = rest
-                if current_indi:
-                    if rest == "NAME":
-                        individuals[current_indi]["name"] = value
-                    elif rest == "SEX":
-                        individuals[current_indi]["sex"] = value
-                    elif rest == "FAMC":
-                        individuals[current_indi]["famc"] = value
-                    elif rest == "FAMS":
-                        individuals[current_indi]["fams"].append(value)
-                elif current_fam:
-                    if rest == "HUSB":
-                        families[current_fam]["husb"] = value
-                    elif rest == "WIFE":
-                        families[current_fam]["wife"] = value
-                    elif rest == "CHIL":
-                        families[current_fam]["chil"].append(value)
-            elif level == 2 and current_indi:
-                if rest == "GIVN":
-                    individuals[current_indi]["givn"] = value
-                elif rest == "SURN":
-                    individuals[current_indi]["surn"] = value
-                elif rest == "DATE":
-                    if current_event == "BIRT":
-                        individuals[current_indi]["birth"] = value
-                    elif current_event == "DEAT":
-                        individuals[current_indi]["death"] = value
-
-    return individuals, families
-
-
-def get_name(indi_id: str, individuals: dict) -> str:
-    d = individuals.get(indi_id, {})
-    name = d.get("name", "").replace("/", "").strip()
-    if not name:
-        name = f"{d.get('givn', '').strip()} {d.get('surn', '').strip()}".strip()
-    return name or indi_id
-
-
-def get_birth(indi_id: str, individuals: dict) -> str:
-    birth = individuals.get(indi_id, {}).get("birth", "")
-    if not birth:
-        return "?"
-    m = re.search(r"\b(\d{4})\b", birth)
-    return m.group(1) if m else birth
-
-
-def get_parents(indi_id: str, individuals: dict, families: dict):
-    famc = individuals.get(indi_id, {}).get("famc", "")
-    if not famc:
-        return None, None
-    fam = families.get(famc, {})
-    return fam.get("husb"), fam.get("wife")
-
-
-def find_individual(individuals: dict, pattern: str) -> str | None:
-    """Find an individual whose cleaned name contains the search pattern."""
-    pattern_lower = pattern.lower()
-    for indi_id, data in individuals.items():
-        name = get_name(indi_id, individuals).lower()
-        if pattern_lower in name:
-            return indi_id
-    return None
+# Per-generation vertical spacing.  Derived from ``min_generation_height``
+# so any tweak to ``DESCENDER_OFFSET``/``CHILD_DROP``/``INTER_GEN_GAP`` in
+# ``drawio_layout.py`` flows through here.  An 80 px floor keeps the
+# pedigree compact (no sibling bar, no inter-generation padding).
+_MIN_GENERATION_HEIGHT = min_generation_height(TEXT_H)
+GENERATION_HEIGHT = max(80.0, _MIN_GENERATION_HEIGHT)
 
 
 def find_path_to_ancestor(
@@ -150,41 +80,43 @@ def find_path_to_ancestor(
     return None
 
 
-def text_cell(cell_id: str, x: float, y: float, name: str, birth: str) -> str:
-    return (
-        f'        <mxCell id="{cell_id}" value="{name}&#xa;(b. {birth})" '
-        f'style="text;html=1;strokeColor=none;fillColor=#ffffff;align=center;'
-        f'verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;'
-        f'fontFamily={FONT_FAMILY};fontColor={STROKE_COLOR};" vertex="1" parent="1">\n'
-        f'          <mxGeometry x="{x}" y="{y}" width="{TEXT_W}" height="{TEXT_H}" as="geometry" />\n'
-        f'        </mxCell>'
-    )
+def get_birth(indi_id: str, individuals: dict) -> str:
+    """Pedigree-specific helper: returns the 4-digit birth year, or '?' if missing.
+
+    The shared ``parse_gedcom.get_birth`` returns the full GEDCOM date string;
+    for the pedigree we want just the year so it fits on one line in the
+    "Name (b. Year)" label format.
+    """
+    birth = individuals.get(indi_id, {}).get("birth", "")
+    if not birth:
+        return "?"
+    m = re.search(r"\b(\d{4})\b", birth)
+    return m.group(1) if m else birth
 
 
-def marriage_lines(mid: str, x1: float, x2: float, y: float) -> str:
+def marriage_pair_lines(mid: str, x1: float, x2: float, y: float) -> str:
+    """Render the double horizontal marriage line for a couple.
+
+    Two parallel ``shape=line`` cells stacked with ``MARRIAGE_LINE_GAP`` between
+    them, starting at ``(x1, y)`` and ending at ``(x2, y)``.  Reuses the shared
+    ``hline`` helper.
+    """
     width = x2 - x1
-    return (
-        f'        <mxCell id="{mid}a" value="" style="shape=line;direction=east;'
-        f'whiteSpace=wrap;html=1;strokeColor={STROKE_COLOR};strokeWidth=1.5;" vertex="1" parent="1">\n'
-        f'          <mxGeometry x="{x1}" y="{y}" width="{width}" height="1" as="geometry" />\n'
-        f'        </mxCell>\n'
-        f'        <mxCell id="{mid}b" value="" style="shape=line;direction=east;'
-        f'whiteSpace=wrap;html=1;strokeColor={STROKE_COLOR};strokeWidth=1.5;" vertex="1" parent="1">\n'
-        f'          <mxGeometry x="{x1}" y="{y + MARRIAGE_LINE_GAP}" width="{width}" height="1" as="geometry" />\n'
-        f'        </mxCell>'
-    )
+    return "\n".join([
+        hline("1", f"{mid}a", x1, y, width),
+        hline("1", f"{mid}b", x1, y + MARRIAGE_LINE_GAP, width),
+    ])
 
 
-def vline(vid: str, x: float, y: float, h: float) -> str:
-    return (
-        f'        <mxCell id="{vid}" value="" style="shape=rect;whiteSpace=wrap;html=1;'
-        f'fillColor={STROKE_COLOR};strokeColor=none;" vertex="1" parent="1">\n'
-        f'          <mxGeometry x="{x - 1}" y="{y}" width="2" height="{h}" as="geometry" />\n'
-        f'        </mxCell>'
-    )
+def descender_line(vid: str, x: float, y: float, h: float) -> str:
+    """Vertical descender from parent marriage line down to child label.
+
+    2 px wide, centred on ``x`` (so the shared ``vrect`` is placed at ``x - 1``).
+    """
+    return vrect("1", vid, x - 1.0, y, h, width=2.0)
 
 
-def generate_drawio(path_ids: list[str], individuals: dict, families: dict, title: str) -> str:
+def generate_drawio(path_ids: list[str], individuals: dict, families: dict, title: str, font_family: str) -> str:
     # Build couple rows from the bottom (focus) up to the top (target).
     # Each row is (direct_ancestor_id, spouse_id, child_id).
     rows: list[tuple[str, str | None, str]] = []
@@ -206,28 +138,24 @@ def generate_drawio(path_ids: list[str], individuals: dict, families: dict, titl
     page_width = couple_width + 2 * MARGIN
     page_height = (len(rows) + 1) * GENERATION_HEIGHT + TEXT_H + 2 * MARGIN
 
-    parts: list[str] = []
-    parts.append(
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<mxfile host="drawio" version="26.0.0">\n'
-        '  <diagram name="Pedigree">\n'
+    parts: list[str] = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<mxfile host="drawio" version="26.0.0">',
+        '  <diagram name="Pedigree">',
         f'    <mxGraphModel dx="800" dy="600" grid="1" gridSize="10" guides="1" '
         f'tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" '
-        f'pageWidth="{page_width}" pageHeight="{page_height}" math="0" shadow="0">\n'
-        '      <root>\n'
-        '        <mxCell id="0" />\n'
-        '        <mxCell id="1" parent="0" />'
-    )
-
-    parts.append(
-        f'\n        <!-- Title -->\n'
+        f'pageWidth="{page_width}" pageHeight="{page_height}" math="0" shadow="0">',
+        '      <root>',
+        '        <mxCell id="0" />',
+        '        <mxCell id="1" parent="0" />',
+        '',
         f'        <mxCell id="title" value="{title}" style="text;html=1;strokeColor=none;'
         f'fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;'
-        f'fontSize=14;fontFamily={FONT_FAMILY};fontStyle=1" vertex="1" parent="1">\n'
+        f'fontSize=14;fontFamily={font_family};fontStyle=1" vertex="1" parent="1">',
         f'          <mxGeometry x="{MARGIN}" y="{MARGIN / 2}" width="{couple_width}" '
-        f'height="20" as="geometry" />\n'
-        f'        </mxCell>'
-    )
+        f'height="20" as="geometry" />',
+        '        </mxCell>',
+    ]
 
     # Start from the bottom; focus person's parents are row 0.
     centre_x = MARGIN + TEXT_W + MARRIAGE_GAP / 2
@@ -257,11 +185,12 @@ def generate_drawio(path_ids: list[str], individuals: dict, families: dict, titl
     focus_x = centre_x - TEXT_W / 2
 
     # Marriage lines first (under labels)
-    parts.append("\n        <!-- Marriage lines -->")
+    parts.append("")
+    parts.append("        <!-- Marriage lines -->")
     for idx, row in enumerate(row_data):
         if row["spouse_id"]:
             parts.append(
-                marriage_lines(
+                marriage_pair_lines(
                     f"m{idx}",
                     row["direct_x"] + TEXT_W,
                     row["spouse_x"],
@@ -270,45 +199,83 @@ def generate_drawio(path_ids: list[str], individuals: dict, families: dict, titl
             )
 
     # Person labels
-    parts.append("\n        <!-- Names -->")
+    parts.append("")
+    parts.append("        <!-- Names -->")
     for idx, row in enumerate(row_data):
-        direct_name = get_name(row["direct_id"], individuals)
-        direct_birth = get_birth(row["direct_id"], individuals)
         parts.append(
-            text_cell(f"p{idx}a", row["direct_x"], row["y"], direct_name, direct_birth)
+            text_cell(
+                "1",
+                f"p{idx}a",
+                row["direct_x"],
+                row["y"],
+                TEXT_W,
+                TEXT_H,
+                get_name(row["direct_id"], individuals),
+                get_birth(row["direct_id"], individuals),
+                font_family,
+                font_size=FONT_SIZE,
+                font_color=FONT_COLOR,
+            )
         )
         if row["spouse_id"]:
-            spouse_name = get_name(row["spouse_id"], individuals)
-            spouse_birth = get_birth(row["spouse_id"], individuals)
             parts.append(
-                text_cell(f"p{idx}b", row["spouse_x"], row["y"], spouse_name, spouse_birth)
+                text_cell(
+                    "1",
+                    f"p{idx}b",
+                    row["spouse_x"],
+                    row["y"],
+                    TEXT_W,
+                    TEXT_H,
+                    get_name(row["spouse_id"], individuals),
+                    get_birth(row["spouse_id"], individuals),
+                    font_family,
+                    font_size=FONT_SIZE,
+                    font_color=FONT_COLOR,
+                )
             )
 
     # Focus person label at the bottom
+    parts.append("")
     parts.append(
-        text_cell(f"focus", focus_x, focus_y, get_name(focus_id, individuals), get_birth(focus_id, individuals))
+        text_cell(
+            "1",
+            "focus",
+            focus_x,
+            focus_y,
+            TEXT_W,
+            TEXT_H,
+            get_name(focus_id, individuals),
+            get_birth(focus_id, individuals),
+            font_family,
+            font_size=FONT_SIZE,
+            font_color=FONT_COLOR,
+        )
     )
 
-    # Descenders between generations
-    parts.append("\n        <!-- Descent lines -->")
+    # Descenders between generations.  Use the shared ``couple_descender_top``
+    # helper so the marriage-line-bottom offset tracks the shared
+    # ``MARRIAGE_Y_OFFSET`` and ``MARRIAGE_LINE_GAP`` constants.
+    parts.append("")
+    parts.append("        <!-- Descent lines -->")
     for idx, row in enumerate(row_data):
         # Vertical line from this row's marriage line down to the child below.
-        top_y_line = row["marriage_y"] + MARRIAGE_LINE_GAP + 1.0
+        # ``couple_descender_top`` returns the top of the descender for a
+        # couple rooted at the given y; we apply it to the absolute y of the
+        # marriage line centre (which is the same offset as the row's y).
+        top_y_line = couple_descender_top(row["y"])
         if idx == 0:
             # Child is the focus person (single label, no spouse).
             bottom_y = focus_y
         else:
-            next_row = row_data[idx - 1]  # next row is physically below (idx decreases going down)
+            next_row = row_data[idx - 1]
             bottom_y = next_row["marriage_y"]
         height = bottom_y - top_y_line
-        parts.append(vline(f"v{idx}", row["marriage_x"], top_y_line, height))
+        parts.append(descender_line(f"v{idx}", row["marriage_x"], top_y_line, height))
 
-    parts.append(
-        '\n      </root>\n'
-        '    </mxGraphModel>\n'
-        '  </diagram>\n'
-        '</mxfile>'
-    )
+    parts.append('      </root>')
+    parts.append('    </mxGraphModel>')
+    parts.append('  </diagram>')
+    parts.append('</mxfile>')
 
     return "\n".join(parts)
 
@@ -323,15 +290,12 @@ def main() -> int:
     parser.add_argument("--font-family", default="Helvetica", help="Font family for labels and title (default Helvetica).")
     args = parser.parse_args()
 
-    global FONT_FAMILY
-    FONT_FAMILY = args.font_family
-
     individuals, families = parse_gedcom(args.gedcom)
 
     def resolve(ident: str) -> str | None:
         if ident.startswith("@I") and ident.endswith("@"):
             return ident if ident in individuals else None
-        return find_individual(individuals, ident)
+        return find_individual_substring(individuals, ident)
 
     start_id = resolve(args.start)
     if not start_id:
@@ -356,7 +320,7 @@ def main() -> int:
         print(f"  {i + 1}. {get_name(pid, individuals)} ({pid})")
 
     title = args.title or f"Pedigree: {get_name(target_id, individuals)} to {get_name(start_id, individuals)}"
-    xml = generate_drawio(path, individuals, families, title)
+    xml = generate_drawio(path, individuals, families, title, args.font_family)
     Path(args.output).write_text(xml, encoding="utf-8")
     print(f"Wrote {len(path)} generations to {args.output}")
     return 0
